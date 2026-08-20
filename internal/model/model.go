@@ -84,6 +84,11 @@ func (state EdgeState) String() string {
 	}
 }
 
+// MarshalText makes edge states human-readable in JSON metrics.
+func (state EdgeState) MarshalText() ([]byte, error) {
+	return []byte(state.String()), nil
+}
+
 // IPVersion identifies the address family carried by a flow.
 type IPVersion uint8
 

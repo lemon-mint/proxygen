@@ -26,6 +26,7 @@ type TCPConfig struct {
 	Workers          int
 	QueueDepth       int
 	ConnectTimeout   time.Duration
+	IdleTimeout      time.Duration
 	RelayBufferBytes int
 
 	// AbortPending synchronously aborts in-progress endpoint handshakes on Close.
@@ -55,7 +56,9 @@ type TCP struct {
 	source         egress.Source
 	observer       egress.TCPObserver
 	connectTimeout time.Duration
+	idleTimeout    time.Duration
 	abortPending   func()
+	now            func() time.Time
 	buffers        sync.Pool
 
 	ctx    context.Context
@@ -118,6 +121,9 @@ func NewTCP(source egress.Source, cfg TCPConfig) (*TCP, error) {
 	if cfg.ConnectTimeout <= 0 {
 		return nil, fmt.Errorf("TCP relay connect timeout must be positive")
 	}
+	if cfg.IdleTimeout <= 0 {
+		return nil, fmt.Errorf("TCP relay idle timeout must be positive")
+	}
 	if cfg.RelayBufferBytes < 1 {
 		return nil, fmt.Errorf("TCP relay buffer size must be positive")
 	}
@@ -131,8 +137,10 @@ func NewTCP(source egress.Source, cfg TCPConfig) (*TCP, error) {
 	relay := &TCP{
 		source:         source,
 		connectTimeout: cfg.ConnectTimeout,
+		idleTimeout:    cfg.IdleTimeout,
 		observer:       observer,
 		abortPending:   cfg.AbortPending,
+		now:            time.Now,
 		ctx:            ctx,
 		cancel:         cancel,
 		admissions:     make(chan struct{}, capacity),
@@ -307,10 +315,81 @@ type closeReader interface {
 	CloseRead() error
 }
 
+type activityDeadline struct {
+	mu          sync.Mutex
+	idleTimeout time.Duration
+	left        net.Conn
+	right       net.Conn
+	now         func() time.Time
+}
+
+func (d *activityDeadline) refresh() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	deadline := d.now().Add(d.idleTimeout)
+	leftErr := d.left.SetDeadline(deadline)
+	rightErr := d.right.SetDeadline(deadline)
+	return errors.Join(leftErr, rightErr)
+}
+
+type activityConn struct {
+	net.Conn
+	deadline *activityDeadline
+}
+
+func (c activityConn) Read(buffer []byte) (int, error) {
+	count, err := c.Conn.Read(buffer)
+	if count > 0 {
+		if deadlineErr := c.deadline.refresh(); deadlineErr != nil {
+			err = errors.Join(err, deadlineErr)
+		}
+	}
+	return count, err
+}
+
+func (c activityConn) Write(buffer []byte) (int, error) {
+	count, err := c.Conn.Write(buffer)
+	if count > 0 {
+		if deadlineErr := c.deadline.refresh(); deadlineErr != nil {
+			err = errors.Join(err, deadlineErr)
+		}
+	}
+	return count, err
+}
+
+func (c activityConn) CloseWrite() error {
+	if closer, ok := c.Conn.(closeWriter); ok {
+		return closer.CloseWrite()
+	}
+	return nil
+}
+
+func (c activityConn) CloseRead() error {
+	if closer, ok := c.Conn.(closeReader); ok {
+		return closer.CloseRead()
+	}
+	return nil
+}
+
 func (r *TCP) relay(left, right net.Conn) {
+	deadline := &activityDeadline{
+		idleTimeout: r.idleTimeout,
+		left:        left,
+		right:       right,
+		now:         r.now,
+	}
+	if err := deadline.refresh(); err != nil {
+		left.Close()
+		right.Close()
+		return
+	}
+
+	activeLeft := activityConn{Conn: left, deadline: deadline}
+	activeRight := activityConn{Conn: right, deadline: deadline}
 	results := make(chan error, 2)
-	go r.copyDirection(results, right, left)
-	go r.copyDirection(results, left, right)
+	go r.copyDirection(results, activeRight, activeLeft)
+	go r.copyDirection(results, activeLeft, activeRight)
 
 	for completed := 0; completed < 2; completed++ {
 		select {

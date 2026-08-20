@@ -243,6 +243,9 @@ func validateKey(path, key string) error {
 	if err != nil || len(decoded) != 32 {
 		return fmt.Errorf("%s must be a base64-encoded 32-byte key", path)
 	}
+	if base64.StdEncoding.EncodeToString(decoded) != key {
+		return fmt.Errorf("%s must be a canonical base64-encoded 32-byte key", path)
+	}
 	var combined byte
 	for _, value := range decoded {
 		combined |= value

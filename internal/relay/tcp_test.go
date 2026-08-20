@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -55,10 +56,24 @@ func TestTCPRequestFailurePathsCompleteOnce(t *testing.T) {
 	})
 }
 
+func TestTCPRequiresPositiveIdleTimeout(t *testing.T) {
+	relay, err := NewTCP(fakeSource{}, TCPConfig{
+		Workers:          1,
+		ConnectTimeout:   time.Second,
+		RelayBufferBytes: 1024,
+		AbortPending:     func() {},
+	})
+	if err == nil {
+		relay.Close()
+		t.Fatal("NewTCP accepted a non-positive idle timeout")
+	}
+}
+
 func TestTCPRequiresAbortPending(t *testing.T) {
 	relay, err := NewTCP(fakeSource{}, TCPConfig{
 		Workers:          1,
 		ConnectTimeout:   time.Second,
+		IdleTimeout:      time.Second,
 		RelayBufferBytes: 1024,
 	})
 	if err == nil {
@@ -76,6 +91,7 @@ func TestTCPCloseAbortsPendingCreateConn(t *testing.T) {
 	relay, err := NewTCP(fakeSource{}, TCPConfig{
 		Workers:          1,
 		ConnectTimeout:   time.Second,
+		IdleTimeout:      time.Second,
 		RelayBufferBytes: 1024,
 		AbortPending: func() {
 			abortCalls.Add(1)
@@ -352,6 +368,114 @@ func TestTCPRelaysBothDirections(t *testing.T) {
 	relay.Close()
 }
 
+func TestTCPInitialIdleDeadlineClosesFlowAndReleasesWorker(t *testing.T) {
+	const idleTimeout = time.Minute
+	base := time.Date(2026, time.August, 21, 12, 0, 0, 0, time.UTC)
+	firstIngress := newDeadlineTestConn()
+	firstEgress := newDeadlineTestConn()
+	secondIngress := newDeadlineTestConn()
+	secondEgress := newDeadlineTestConn()
+	secondDialed := make(chan struct{})
+	var dials atomic.Int32
+	edge := &fakeEdge{
+		id: "edge",
+		dialTCP: func(context.Context, netip.AddrPort) (net.Conn, error) {
+			switch dials.Add(1) {
+			case 1:
+				return firstEgress, nil
+			case 2:
+				close(secondDialed)
+				return secondEgress, nil
+			default:
+				return nil, errors.New("unexpected extra dial")
+			}
+		},
+	}
+	relay, err := NewTCP(fakeSource{edges: []egress.Edge{edge}}, TCPConfig{
+		Workers:          1,
+		QueueDepth:       1,
+		ConnectTimeout:   time.Second,
+		IdleTimeout:      idleTimeout,
+		RelayBufferBytes: 1024,
+		AbortPending:     func() {},
+	})
+	if err != nil {
+		t.Fatalf("NewTCP: %v", err)
+	}
+	defer relay.Close()
+
+	now := make(chan time.Time, 2)
+	now <- base
+	now <- base.Add(time.Hour)
+	relay.now = func() time.Time { return <-now }
+
+	firstRequest := &fakeRequest{id: validTCPID(), createOK: true, conn: firstIngress}
+	relay.handle(firstRequest)
+	firstRequest.assertCompletion(t, false)
+	firstDeadline := base.Add(idleTimeout)
+	assertDeadlinePair(t, firstIngress, firstEgress, firstDeadline)
+
+	secondRequest := &fakeRequest{id: validTCPID(), createOK: true, conn: secondIngress}
+	relay.handle(secondRequest)
+	secondRequest.assertCompletion(t, false)
+
+	firstEgress.advance <- firstDeadline
+	waitSignal(t, firstIngress.closed, "idle ingress close")
+	waitSignal(t, firstEgress.closed, "idle egress close")
+	waitSignal(t, secondDialed, "worker to process queued flow after idle expiry")
+	if admitted := len(relay.admissions); admitted != 1 {
+		t.Fatalf("admission slots in use after worker advanced = %d, want 1", admitted)
+	}
+
+	secondDeadline := base.Add(time.Hour + idleTimeout)
+	assertDeadlinePair(t, secondIngress, secondEgress, secondDeadline)
+	secondEgress.advance <- secondDeadline
+	waitSignal(t, secondIngress.closed, "queued ingress idle close")
+	waitSignal(t, secondEgress.closed, "queued egress idle close")
+}
+
+func TestTCPActivityExtendsSharedBidirectionalDeadline(t *testing.T) {
+	relay := newTestTCP(t, fakeSource{})
+	defer relay.Close()
+
+	base := time.Date(2026, time.August, 21, 12, 0, 0, 0, time.UTC)
+	now := make(chan time.Time, 3)
+	now <- base
+	now <- base.Add(100 * time.Millisecond)
+	now <- base.Add(200 * time.Millisecond)
+	relay.now = func() time.Time { return <-now }
+
+	ingress := newDeadlineTestConn()
+	egress := newDeadlineTestConn()
+	ingress.reads <- deadlineTestRead{payload: []byte("activity")}
+	done := make(chan struct{})
+	go func() {
+		relay.relay(ingress, egress)
+		close(done)
+	}()
+
+	initialDeadline := base.Add(time.Second)
+	readDeadline := base.Add(1100 * time.Millisecond)
+	writeDeadline := base.Add(1200 * time.Millisecond)
+	for _, deadline := range []time.Time{initialDeadline, readDeadline, writeDeadline} {
+		assertDeadlinePair(t, ingress, egress, deadline)
+	}
+	if payload := string(waitWrite(t, egress)); payload != "activity" {
+		t.Fatalf("egress payload = %q, want activity", payload)
+	}
+
+	egress.advance <- initialDeadline
+	waitDeadlineCheck(t, egress, initialDeadline)
+	if ingress.isClosed() || egress.isClosed() {
+		t.Fatal("flow closed at the original deadline despite one-direction activity")
+	}
+
+	egress.advance <- writeDeadline
+	waitSignal(t, done, "extended idle deadline expiry")
+	waitSignal(t, ingress.closed, "extended-deadline ingress close")
+	waitSignal(t, egress.closed, "extended-deadline egress close")
+}
+
 func TestFlowKeyFromTCPIDPreservesFullTuple(t *testing.T) {
 	id := stack.TransportEndpointID{
 		LocalPort:     8443,
@@ -379,6 +503,7 @@ func newTestTCP(t *testing.T, source egress.Source) *TCP {
 		Workers:          1,
 		QueueDepth:       0,
 		ConnectTimeout:   time.Second,
+		IdleTimeout:      time.Second,
 		RelayBufferBytes: 1024,
 		AbortPending:     func() {},
 	})
@@ -498,6 +623,169 @@ func (*fakeEdge) Close() error {
 
 func failDial(context.Context, netip.AddrPort) (net.Conn, error) {
 	return nil, errors.New("dial failed")
+}
+
+type deadlineTestRead struct {
+	payload []byte
+	err     error
+}
+
+type deadlineTestConn struct {
+	reads          chan deadlineTestRead
+	writes         chan []byte
+	advance        chan time.Time
+	deadlineChecks chan time.Time
+	deadlines      chan time.Time
+	closed         chan struct{}
+	closeOnce      sync.Once
+
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func newDeadlineTestConn() *deadlineTestConn {
+	return &deadlineTestConn{
+		reads:          make(chan deadlineTestRead, 1),
+		writes:         make(chan []byte, 1),
+		advance:        make(chan time.Time, 1),
+		deadlineChecks: make(chan time.Time, 1),
+		deadlines:      make(chan time.Time, 8),
+		closed:         make(chan struct{}),
+	}
+}
+
+func (c *deadlineTestConn) Read(buffer []byte) (int, error) {
+	for {
+		select {
+		case result := <-c.reads:
+			return copy(buffer, result.payload), result.err
+		case now := <-c.advance:
+			c.mu.Lock()
+			deadline := c.deadline
+			c.mu.Unlock()
+			if !deadline.IsZero() && !now.Before(deadline) {
+				return 0, os.ErrDeadlineExceeded
+			}
+			c.deadlineChecks <- now
+		case <-c.closed:
+			return 0, net.ErrClosed
+		}
+	}
+}
+
+func (c *deadlineTestConn) Write(buffer []byte) (int, error) {
+	select {
+	case <-c.closed:
+		return 0, net.ErrClosed
+	default:
+	}
+	payload := append([]byte(nil), buffer...)
+	c.writes <- payload
+	return len(buffer), nil
+}
+
+func (c *deadlineTestConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+	})
+	return nil
+}
+
+func (*deadlineTestConn) LocalAddr() net.Addr {
+	return deadlineTestAddr("local")
+}
+
+func (*deadlineTestConn) RemoteAddr() net.Addr {
+	return deadlineTestAddr("remote")
+}
+
+func (c *deadlineTestConn) SetDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	c.deadline = deadline
+	c.mu.Unlock()
+	c.deadlines <- deadline
+	return nil
+}
+
+func (*deadlineTestConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (*deadlineTestConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+func (c *deadlineTestConn) isClosed() bool {
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+type deadlineTestAddr string
+
+func (deadlineTestAddr) Network() string {
+	return "test"
+}
+
+func (a deadlineTestAddr) String() string {
+	return string(a)
+}
+
+func assertDeadlinePair(
+	t *testing.T,
+	left *deadlineTestConn,
+	right *deadlineTestConn,
+	want time.Time,
+) {
+	t.Helper()
+	leftDeadline := waitDeadline(t, left)
+	rightDeadline := waitDeadline(t, right)
+	if !leftDeadline.Equal(want) || !rightDeadline.Equal(want) {
+		t.Fatalf(
+			"shared deadlines = (%v, %v), want (%v, %v)",
+			leftDeadline,
+			rightDeadline,
+			want,
+			want,
+		)
+	}
+}
+
+func waitDeadline(t *testing.T, conn *deadlineTestConn) time.Time {
+	t.Helper()
+	select {
+	case deadline := <-conn.deadlines:
+		return deadline
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for connection deadline")
+		return time.Time{}
+	}
+}
+
+func waitDeadlineCheck(t *testing.T, conn *deadlineTestConn, want time.Time) {
+	t.Helper()
+	select {
+	case checked := <-conn.deadlineChecks:
+		if !checked.Equal(want) {
+			t.Fatalf("checked time = %v, want %v", checked, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pre-deadline check")
+	}
+}
+
+func waitWrite(t *testing.T, conn *deadlineTestConn) []byte {
+	t.Helper()
+	select {
+	case payload := <-conn.writes:
+		return payload
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for relayed write")
+		return nil
+	}
 }
 
 type observedConn struct {

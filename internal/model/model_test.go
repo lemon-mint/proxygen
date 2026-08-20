@@ -1,9 +1,20 @@
 package model
 
 import (
+	"encoding/json"
 	"net/netip"
 	"testing"
 )
+
+func TestEdgeStateMarshalsAsName(t *testing.T) {
+	encoded, err := json.Marshal(EdgeStateHealthy)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if string(encoded) != `"healthy"` {
+		t.Fatalf("json.Marshal() = %s, want %q", encoded, `"healthy"`)
+	}
+}
 
 func TestFlowKeyDistinguishesEveryTupleComponent(t *testing.T) {
 	base := mustFlowKey(t, ProtocolUDP, "192.0.2.10:40000", "198.51.100.20:53")

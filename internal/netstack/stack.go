@@ -28,6 +28,9 @@ type Handlers struct {
 
 func buildStack(mtu, maxTCPInFlight int, handlers Handlers) (*stack.Stack, *channel.Endpoint, *tcp.Forwarder, *udp.Forwarder, error) {
 	ep := channel.New(outboundQueueSize, uint32(mtu), "")
+	// HandleLocal must remain false on this promiscuous ingress NIC. With it
+	// enabled, gVisor treats every unassigned packet source as a temporary local
+	// address and rejects the packet before transport delivery.
 	s := stack.New(stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocol,
@@ -37,7 +40,7 @@ func buildStack(mtu, maxTCPInFlight int, handlers Handlers) (*stack.Stack, *chan
 			tcp.NewProtocol,
 			udp.NewProtocol,
 		},
-		HandleLocal: true,
+		HandleLocal: false,
 	})
 	cleanup := func() {
 		s.Destroy()

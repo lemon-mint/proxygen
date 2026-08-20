@@ -217,6 +217,98 @@ func TestValidateRejectsAllZeroWireGuardKeysWithoutExposingThem(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNonCanonicalWireGuardKeysWithoutExposingThem(t *testing.T) {
+	canonical := testKey(42)
+	variants := []struct {
+		name string
+		key  string
+	}{
+		{name: "carriage return", key: canonical[:8] + "\r" + canonical[8:]},
+		{name: "line feed", key: canonical[:8] + "\n" + canonical[8:]},
+	}
+	fields := []struct {
+		name   string
+		path   string
+		change func(*Config, string)
+	}{
+		{
+			name: "ingress private key",
+			path: "ingress.private_key",
+			change: func(cfg *Config, key string) {
+				cfg.Ingress.PrivateKey = key
+			},
+		},
+		{
+			name: "ingress peer public key",
+			path: "ingress.peers[0].public_key",
+			change: func(cfg *Config, key string) {
+				cfg.Ingress.Peers[0].PublicKey = key
+			},
+		},
+		{
+			name: "egress private key",
+			path: "edges[0].private_key",
+			change: func(cfg *Config, key string) {
+				cfg.Edges[0].PrivateKey = key
+			},
+		},
+		{
+			name: "egress peer public key",
+			path: "edges[0].peer_public_key",
+			change: func(cfg *Config, key string) {
+				cfg.Edges[0].PeerPublicKey = key
+			},
+		},
+	}
+
+	for _, field := range fields {
+		t.Run(field.name, func(t *testing.T) {
+			for _, variant := range variants {
+				t.Run(variant.name, func(t *testing.T) {
+					cfg := validConfig()
+					field.change(&cfg, variant.key)
+
+					err := cfg.Validate()
+					if err == nil || !strings.Contains(err.Error(), field.path) || !strings.Contains(err.Error(), "canonical base64") {
+						t.Fatalf("Validate() error = %v, want canonical-key error for %s", err, field.path)
+					}
+					if strings.Contains(err.Error(), variant.key) || strings.Contains(err.Error(), canonical) {
+						t.Fatalf("Validate() error exposed rejected key: %q", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestValidateRejectsNonCanonicalDuplicateIngressPublicKeys(t *testing.T) {
+	for _, separator := range []struct {
+		name  string
+		value string
+	}{
+		{name: "carriage return", value: "\r"},
+		{name: "line feed", value: "\n"},
+	} {
+		t.Run(separator.name, func(t *testing.T) {
+			cfg := validConfig()
+			canonical := cfg.Ingress.Peers[0].PublicKey
+			duplicate := canonical[:8] + separator.value + canonical[8:]
+			cfg.Ingress.Peers = append(cfg.Ingress.Peers, IngressPeerConfig{
+				PublicKey:      duplicate,
+				OverlayAddress: netip.MustParseAddr("10.0.0.3"),
+			})
+
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "ingress.peers[1].public_key") || !strings.Contains(err.Error(), "canonical base64") {
+				t.Fatalf("Validate() error = %v, want non-canonical duplicate-key rejection", err)
+			}
+			if strings.Contains(err.Error(), duplicate) || strings.Contains(err.Error(), canonical) {
+				t.Fatalf("Validate() error exposed rejected key: %q", err)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsEveryASCIIControlByteWithoutEchoingIt(t *testing.T) {
 	fields := []struct {
 		name   string

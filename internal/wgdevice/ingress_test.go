@@ -75,6 +75,85 @@ func TestIngressUAPIRejectsAllZeroKeysWithoutEmittingConfiguration(t *testing.T)
 	}
 }
 
+func TestIngressUAPIRejectsNonCanonicalKeysWithoutEmittingConfiguration(t *testing.T) {
+	canonical := testKey(4)
+	for _, separator := range []struct {
+		name  string
+		value string
+	}{
+		{name: "carriage return", value: "\r"},
+		{name: "line feed", value: "\n"},
+	} {
+		t.Run(separator.name, func(t *testing.T) {
+			injected := canonical[:8] + separator.value + canonical[8:]
+			for _, field := range []struct {
+				name   string
+				path   string
+				change func(*config.IngressConfig)
+			}{
+				{
+					name: "private key",
+					path: "ingress.private_key",
+					change: func(cfg *config.IngressConfig) {
+						cfg.PrivateKey = injected
+					},
+				},
+				{
+					name: "peer public key",
+					path: "ingress.peers[0].public_key",
+					change: func(cfg *config.IngressConfig) {
+						cfg.Peers[0].PublicKey = injected
+					},
+				},
+			} {
+				t.Run(field.name, func(t *testing.T) {
+					cfg := validIngressConfig()
+					field.change(&cfg)
+
+					configuration, err := ingressUAPI(cfg)
+					if err == nil || !strings.Contains(err.Error(), field.path) || !strings.Contains(err.Error(), "canonical base64") {
+						t.Fatalf("ingressUAPI() error = %v, want canonical-key error for %s", err, field.path)
+					}
+					if configuration != "" {
+						t.Fatalf("ingressUAPI() configuration = %q, want no emitted configuration", configuration)
+					}
+					if strings.Contains(err.Error(), injected) || strings.Contains(err.Error(), canonical) {
+						t.Fatalf("ingressUAPI() error exposed rejected key: %q", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestIngressUAPIRejectsNonCanonicalDuplicatePeerKeysWithoutEmittingConfiguration(t *testing.T) {
+	for _, separator := range []struct {
+		name  string
+		value string
+	}{
+		{name: "carriage return", value: "\r"},
+		{name: "line feed", value: "\n"},
+	} {
+		t.Run(separator.name, func(t *testing.T) {
+			cfg := validIngressConfig()
+			canonical := cfg.Peers[0].PublicKey
+			duplicate := canonical[:8] + separator.value + canonical[8:]
+			cfg.Peers[1].PublicKey = duplicate
+
+			configuration, err := ingressUAPI(cfg)
+			if err == nil || !strings.Contains(err.Error(), "ingress.peers[1].public_key") || !strings.Contains(err.Error(), "canonical base64") {
+				t.Fatalf("ingressUAPI() error = %v, want non-canonical duplicate-key rejection", err)
+			}
+			if configuration != "" {
+				t.Fatalf("ingressUAPI() configuration = %q, want no emitted configuration", configuration)
+			}
+			if strings.Contains(err.Error(), duplicate) || strings.Contains(err.Error(), canonical) {
+				t.Fatalf("ingressUAPI() error exposed rejected key: %q", err)
+			}
+		})
+	}
+}
+
 func TestKeyToHexRejectsAllZeroKey(t *testing.T) {
 	encoded := testKey(0)
 

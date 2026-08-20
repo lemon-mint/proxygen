@@ -27,6 +27,7 @@ import (
 
 func TestRunStartsHealthAndClosesRuntimeInOrder(t *testing.T) {
 	cfg := validAppConfig()
+	cfg.Timeouts.TCPIdle = config.Duration(37 * time.Second)
 	cfg.GeoDatabase = "locations.mmdb"
 	events := &eventLog{}
 	geoDB := &fakeGeo{events: events}
@@ -36,10 +37,12 @@ func TestRunStartsHealthAndClosesRuntimeInOrder(t *testing.T) {
 	ingress := &fakeIngress{events: events}
 	wireGuard := &fakeCloser{name: "wireguard", events: events}
 
+	var tcpConfig relay.TCPConfig
 	deps := fakeDependencies()
 	deps.openGeo = func(string) (geoDatabase, error) { return geoDB, nil }
 	deps.newEdgePool = func(config.Config, edgepool.LocateFunc) (edgeRuntime, error) { return edges, nil }
 	deps.newTCP = func(_ egress.Source, relayConfig relay.TCPConfig) (tcpRuntime, error) {
+		tcpConfig = relayConfig
 		tcpRelay.abortPending = relayConfig.AbortPending
 		return tcpRelay, nil
 	}
@@ -50,6 +53,9 @@ func TestRunStartsHealthAndClosesRuntimeInOrder(t *testing.T) {
 	application, err := newApp(cfg, deps)
 	if err != nil {
 		t.Fatalf("newApp() error = %v", err)
+	}
+	if tcpConfig.IdleTimeout != 37*time.Second {
+		t.Fatalf("TCP idle timeout = %v, want 37s", tcpConfig.IdleTimeout)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

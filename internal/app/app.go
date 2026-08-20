@@ -179,6 +179,7 @@ func newApp(cfg config.Config, deps dependencies) (_ *App, resultErr error) {
 		Workers:          cfg.Limits.TCPRaceWorkers,
 		QueueDepth:       cfg.Limits.TCPRaceQueueDepth,
 		ConnectTimeout:   cfg.Timeouts.TCPConnect.Std(),
+		IdleTimeout:      cfg.Timeouts.TCPIdle.Std(),
 		RelayBufferBytes: cfg.Limits.RelayBufferBytes,
 		AbortPending: func() {
 			if ingress != nil {
