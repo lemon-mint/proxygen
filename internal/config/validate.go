@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net"
 	"net/netip"
-	"strconv"
 	"strings"
 	"time"
+
+	"golang.zx2c4.com/wireguard/device"
 )
 
 // Validate checks every required field and all cross-field invariants. Errors
@@ -22,8 +22,8 @@ func (cfg Config) Validate() error {
 		}
 	}
 
-	if cfg.MTU < 1280 || cfg.MTU > 65535 {
-		add(fmt.Errorf("mtu must be between 1280 and 65535"))
+	if cfg.MTU < 1280 || cfg.MTU > device.MaxContentSize {
+		add(fmt.Errorf("mtu must be between 1280 and %d", device.MaxContentSize))
 	}
 	add(cfg.Ingress.validate())
 	if len(cfg.Edges) < 3 || len(cfg.Edges) > 4 {
@@ -72,6 +72,12 @@ func (cfg Config) Validate() error {
 	}
 
 	return errors.Join(problems...)
+}
+
+// Validate checks the ingress WireGuard configuration independently of a full
+// proxy configuration.
+func (ingress IngressConfig) Validate() error {
+	return ingress.validate()
 }
 
 func (ingress IngressConfig) validate() error {
@@ -129,6 +135,12 @@ func (ingress IngressConfig) validate() error {
 	return errors.Join(problems...)
 }
 
+// Validate checks an egress edge independently of a full proxy
+// configuration.
+func (edge EdgeConfig) Validate() error {
+	return edge.validate("edge")
+}
+
 func (edge EdgeConfig) validate(path string) error {
 	var problems []error
 	add := func(err error) {
@@ -156,6 +168,10 @@ func (edge EdgeConfig) validate(path string) error {
 		}
 		if prefix != prefix.Masked() {
 			add(fmt.Errorf("%s must be a canonical network prefix", prefixPath))
+		}
+		if edge.OverlayAddress.IsValid() &&
+			prefix.Addr().Is4() != edge.OverlayAddress.Addr().Unmap().Is4() {
+			add(fmt.Errorf("%s address family must match %s.overlay_address", prefixPath, path))
 		}
 		if previous, exists := seenPrefixes[prefix]; exists {
 			add(fmt.Errorf("%s duplicates %s.allowed_ips[%d]", prefixPath, path, previous))
@@ -199,6 +215,13 @@ func validateKey(path, key string) error {
 	if err != nil || len(decoded) != 32 {
 		return fmt.Errorf("%s must be a base64-encoded 32-byte key", path)
 	}
+	var combined byte
+	for _, value := range decoded {
+		combined |= value
+	}
+	if combined == 0 {
+		return fmt.Errorf("%s must not be an all-zero key", path)
+	}
 	return nil
 }
 
@@ -217,16 +240,23 @@ func isUsableAddress(address netip.Addr) bool {
 }
 
 func validateEndpoint(path, endpoint string) error {
-	host, portText, err := net.SplitHostPort(endpoint)
+	for index := range endpoint {
+		if endpoint[index] < 0x20 || endpoint[index] == 0x7f {
+			return fmt.Errorf("%s must not contain ASCII control bytes", path)
+		}
+	}
+	address, err := netip.ParseAddrPort(endpoint)
 	if err != nil {
-		return fmt.Errorf("%s must be host:port: %w", path, err)
+		return fmt.Errorf("%s must be a numeric IP address and port", path)
 	}
-	if strings.TrimSpace(host) == "" || strings.ContainsAny(host, " \t\r\n") {
-		return fmt.Errorf("%s host must be non-empty and contain no whitespace", path)
+	if address.Addr().Zone() != "" {
+		return fmt.Errorf("%s must not use an IPv6 zone", path)
 	}
-	port, err := strconv.Atoi(portText)
-	if err != nil || port < 1 || port > 65535 {
+	if address.Port() == 0 {
 		return fmt.Errorf("%s port must be between 1 and 65535", path)
+	}
+	if !isUsableAddress(address.Addr().Unmap()) {
+		return fmt.Errorf("%s must use a unicast IP address", path)
 	}
 	return nil
 }

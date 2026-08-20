@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
 
 	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"golang.zx2c4.com/wireguard/device"
 )
 
 func TestDecodeRejectsUnknownFields(t *testing.T) {
@@ -94,6 +96,137 @@ func TestValidationErrorsDoNotExposePrivateKeys(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsHostnameEndpoint(t *testing.T) {
+	cfg := validConfig()
+	cfg.Edges[0].Endpoint = "edge.example:51820"
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "numeric IP address and port") {
+		t.Fatalf("Validate() error = %v, want numeric endpoint error", err)
+	}
+}
+
+func TestValidateRejectsAllZeroWireGuardKeysWithoutExposingThem(t *testing.T) {
+	zeroKey := testKey(0)
+	tests := []struct {
+		name   string
+		path   string
+		change func(*Config)
+	}{
+		{
+			name: "ingress private key",
+			path: "ingress.private_key",
+			change: func(cfg *Config) {
+				cfg.Ingress.PrivateKey = zeroKey
+			},
+		},
+		{
+			name: "ingress peer public key",
+			path: "ingress.peers[0].public_key",
+			change: func(cfg *Config) {
+				cfg.Ingress.Peers[0].PublicKey = zeroKey
+			},
+		},
+		{
+			name: "egress private key",
+			path: "edges[0].private_key",
+			change: func(cfg *Config) {
+				cfg.Edges[0].PrivateKey = zeroKey
+			},
+		},
+		{
+			name: "egress peer public key",
+			path: "edges[0].peer_public_key",
+			change: func(cfg *Config) {
+				cfg.Edges[0].PeerPublicKey = zeroKey
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validConfig()
+			test.change(&cfg)
+
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.path) {
+				t.Fatalf("Validate() error = %v, want error for %s", err, test.path)
+			}
+			if strings.Contains(err.Error(), zeroKey) {
+				t.Fatalf("Validate() error exposed rejected key: %q", err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsEveryASCIIControlByteInEndpointWithoutEchoingIt(t *testing.T) {
+	controls := make([]byte, 0, 33)
+	for value := range byte(0x20) {
+		controls = append(controls, value)
+	}
+	controls = append(controls, 0x7f)
+
+	for _, control := range controls {
+		t.Run(fmt.Sprintf("%02x", control), func(t *testing.T) {
+			cfg := validConfig()
+			endpoint := fmt.Sprintf("[fe80::1%%eth0%cpublic_key=injected]:51820", control)
+			cfg.Edges[0].Endpoint = endpoint
+
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "ASCII control bytes") {
+				t.Fatalf("Validate() error = %v, want ASCII-control error", err)
+			}
+			if strings.Contains(err.Error(), endpoint) || strings.Contains(err.Error(), "public_key=injected") {
+				t.Fatalf("Validate() error exposed injected endpoint content: %q", err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsZonedEndpoint(t *testing.T) {
+	cfg := validConfig()
+	cfg.Edges[0].Endpoint = "[fe80::1%eth0]:51820"
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "must not use an IPv6 zone") {
+		t.Fatalf("Validate() error = %v, want IPv6-zone error", err)
+	}
+}
+
+func TestValidateRejectsAllowedIPFromDifferentOverlayFamily(t *testing.T) {
+	tests := []struct {
+		name    string
+		overlay string
+		allowed string
+	}{
+		{name: "IPv4 overlay with IPv6 route", overlay: "10.10.1.2/24", allowed: "::/0"},
+		{name: "IPv6 overlay with IPv4 route", overlay: "2001:db8:1::2/64", allowed: "0.0.0.0/0"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			edge := validConfig().Edges[0]
+			edge.OverlayAddress = netip.MustParsePrefix(test.overlay)
+			edge.AllowedIPs = []netip.Prefix{netip.MustParsePrefix(test.allowed)}
+
+			err := edge.Validate()
+			if err == nil || !strings.Contains(err.Error(), "address family must match edge.overlay_address") {
+				t.Fatalf("Validate() error = %v, want address-family error", err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsMTUAboveWireGuardContentLimit(t *testing.T) {
+	cfg := validConfig()
+	cfg.MTU = device.MaxContentSize + 1
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("mtu must be between 1280 and %d", device.MaxContentSize)) {
+		t.Fatalf("Validate() error = %v, want WireGuard content-limit error", err)
+	}
+}
+
 func validConfig() Config {
 	cfg := Default()
 	cfg.Ingress = IngressConfig{
@@ -111,8 +244,8 @@ func validConfig() Config {
 			PrivateKey:          testKey(byte(10 + index)),
 			OverlayAddress:      netip.MustParsePrefix("10.10." + octet + ".2/24"),
 			PeerPublicKey:       testKey(byte(20 + index)),
-			Endpoint:            "edge" + octet + ".example:51820",
-			AllowedIPs:          []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
+			Endpoint:            "192.0.2." + octet + ":51820",
+			AllowedIPs:          []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")},
 			PersistentKeepalive: Duration(25_000_000_000),
 			Geo: GeoConfig{
 				CountryCode: "US",
