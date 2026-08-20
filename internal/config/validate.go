@@ -25,6 +25,8 @@ func (cfg Config) Validate() error {
 	if cfg.MTU < 1280 || cfg.MTU > device.MaxContentSize {
 		add(fmt.Errorf("mtu must be between 1280 and %d", device.MaxContentSize))
 	}
+	add(validateControlBytes("geo_database", cfg.GeoDatabase))
+	add(validateMetricsListen("metrics_listen", cfg.MetricsListen))
 	add(cfg.Ingress.validate())
 	if len(cfg.Edges) < 3 || len(cfg.Edges) > 4 {
 		add(fmt.Errorf("edges must contain 3 or 4 entries; got %d", len(cfg.Edges)))
@@ -35,6 +37,10 @@ func (cfg Config) Validate() error {
 	for index, edge := range cfg.Edges {
 		path := fmt.Sprintf("edges[%d]", index)
 		add(edge.validate(path))
+		if cfg.Ingress.OverlayAddress.IsValid() && edge.OverlayAddress.IsValid() &&
+			cfg.Ingress.OverlayAddress.Addr().Unmap().Is4() != edge.OverlayAddress.Addr().Unmap().Is4() {
+			add(fmt.Errorf("%s.overlay_address address family must match ingress.overlay_address", path))
+		}
 
 		idKey := string(edge.ID)
 		if previous, exists := edgeIDs[idKey]; exists {
@@ -156,10 +162,17 @@ func (edge EdgeConfig) validate(path string) error {
 	add(validateOverlayPrefix(path+".overlay_address", edge.OverlayAddress))
 	add(validateKey(path+".peer_public_key", edge.PeerPublicKey))
 	add(validateEndpoint(path+".endpoint", edge.Endpoint))
+	add(validateHealthCheckAddress(path+".health_check_address", edge.HealthCheckAddress, path+".overlay_address", edge.OverlayAddress))
+	healthCheck, healthCheckErr := netip.ParseAddrPort(edge.HealthCheckAddress)
+	if healthCheckErr == nil {
+		healthCheck = netip.AddrPortFrom(healthCheck.Addr().Unmap(), healthCheck.Port())
+	}
 	if len(edge.AllowedIPs) == 0 {
 		add(fmt.Errorf("%s.allowed_ips must contain at least one prefix", path))
 	}
 	seenPrefixes := make(map[netip.Prefix]int, len(edge.AllowedIPs))
+	hasDefaultRoute := false
+	routesHealthCheck := false
 	for index, prefix := range edge.AllowedIPs {
 		prefixPath := fmt.Sprintf("%s.allowed_ips[%d]", path, index)
 		if !prefix.IsValid() {
@@ -169,15 +182,30 @@ func (edge EdgeConfig) validate(path string) error {
 		if prefix != prefix.Masked() {
 			add(fmt.Errorf("%s must be a canonical network prefix", prefixPath))
 		}
-		if edge.OverlayAddress.IsValid() &&
-			prefix.Addr().Is4() != edge.OverlayAddress.Addr().Unmap().Is4() {
+		familyMatches := !edge.OverlayAddress.IsValid() ||
+			prefix.Addr().Is4() == edge.OverlayAddress.Addr().Unmap().Is4()
+		if !familyMatches {
 			add(fmt.Errorf("%s address family must match %s.overlay_address", prefixPath, path))
+		}
+		if prefix == prefix.Masked() && familyMatches {
+			if prefix.Bits() == 0 {
+				hasDefaultRoute = true
+			}
+			if healthCheckErr == nil && prefix.Contains(healthCheck.Addr()) {
+				routesHealthCheck = true
+			}
 		}
 		if previous, exists := seenPrefixes[prefix]; exists {
 			add(fmt.Errorf("%s duplicates %s.allowed_ips[%d]", prefixPath, path, previous))
 		} else {
 			seenPrefixes[prefix] = index
 		}
+	}
+	if edge.OverlayAddress.IsValid() && !hasDefaultRoute {
+		add(fmt.Errorf("%s.allowed_ips must include the address-family default route", path))
+	}
+	if healthCheckErr == nil && !routesHealthCheck {
+		add(fmt.Errorf("%s.health_check_address must be contained by %s.allowed_ips", path, path))
 	}
 	keepalive := edge.PersistentKeepalive.Std()
 	if keepalive < 0 || keepalive > 65535*time.Second || keepalive%time.Second != 0 {
@@ -240,23 +268,63 @@ func isUsableAddress(address netip.Addr) bool {
 }
 
 func validateEndpoint(path, endpoint string) error {
-	for index := range endpoint {
-		if endpoint[index] < 0x20 || endpoint[index] == 0x7f {
-			return fmt.Errorf("%s must not contain ASCII control bytes", path)
-		}
-	}
-	address, err := netip.ParseAddrPort(endpoint)
+	address, err := parseEndpoint(path, endpoint)
 	if err != nil {
-		return fmt.Errorf("%s must be a numeric IP address and port", path)
-	}
-	if address.Addr().Zone() != "" {
-		return fmt.Errorf("%s must not use an IPv6 zone", path)
-	}
-	if address.Port() == 0 {
-		return fmt.Errorf("%s port must be between 1 and 65535", path)
+		return err
 	}
 	if !isUsableAddress(address.Addr().Unmap()) {
 		return fmt.Errorf("%s must use a unicast IP address", path)
+	}
+	return nil
+}
+
+func validateHealthCheckAddress(path, endpoint, overlayPath string, overlay netip.Prefix) error {
+	if endpoint == "" {
+		return fmt.Errorf("%s is required", path)
+	}
+	address, err := parseEndpoint(path, endpoint)
+	if err != nil {
+		return err
+	}
+	if !isUsableAddress(address.Addr().Unmap()) {
+		return fmt.Errorf("%s must use a unicast IP address", path)
+	}
+	if overlay.IsValid() && address.Addr().Unmap().Is4() != overlay.Addr().Unmap().Is4() {
+		return fmt.Errorf("%s address family must match %s", path, overlayPath)
+	}
+	return nil
+}
+
+func validateMetricsListen(path, endpoint string) error {
+	if endpoint == "" {
+		return nil
+	}
+	_, err := parseEndpoint(path, endpoint)
+	return err
+}
+
+func parseEndpoint(path, endpoint string) (netip.AddrPort, error) {
+	if err := validateControlBytes(path, endpoint); err != nil {
+		return netip.AddrPort{}, err
+	}
+	address, err := netip.ParseAddrPort(endpoint)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("%s must be a numeric IP address and port", path)
+	}
+	if address.Addr().Zone() != "" {
+		return netip.AddrPort{}, fmt.Errorf("%s must not use an IPv6 zone", path)
+	}
+	if address.Port() == 0 {
+		return netip.AddrPort{}, fmt.Errorf("%s port must be between 1 and 65535", path)
+	}
+	return address, nil
+}
+
+func validateControlBytes(path, value string) error {
+	for index := range value {
+		if value[index] < 0x20 || value[index] == 0x7f {
+			return fmt.Errorf("%s must not contain ASCII control bytes", path)
+		}
 	}
 	return nil
 }

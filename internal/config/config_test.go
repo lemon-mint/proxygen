@@ -96,13 +96,71 @@ func TestValidationErrorsDoNotExposePrivateKeys(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsHostnameEndpoint(t *testing.T) {
+func TestValidateAcceptsOptionalControlFields(t *testing.T) {
 	cfg := validConfig()
-	cfg.Edges[0].Endpoint = "edge.example:51820"
+	cfg.GeoDatabase = "/var/lib/GeoLite2-City.mmdb"
+	cfg.MetricsListen = "0.0.0.0:9090"
 
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "numeric IP address and port") {
-		t.Fatalf("Validate() error = %v, want numeric endpoint error", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want valid optional control fields", err)
+	}
+
+	cfg.GeoDatabase = ""
+	cfg.MetricsListen = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want empty optional control fields to disable services", err)
+	}
+}
+
+func TestValidateRejectsHostnameEndpoints(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		change func(*Config)
+	}{
+		{
+			name: "edge endpoint",
+			path: "edges[0].endpoint",
+			change: func(cfg *Config) {
+				cfg.Edges[0].Endpoint = "edge.example:51820"
+			},
+		},
+		{
+			name: "health check address",
+			path: "edges[0].health_check_address",
+			change: func(cfg *Config) {
+				cfg.Edges[0].HealthCheckAddress = "health.example:443"
+			},
+		},
+		{
+			name: "metrics listen",
+			path: "metrics_listen",
+			change: func(cfg *Config) {
+				cfg.MetricsListen = "localhost:9090"
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validConfig()
+			test.change(&cfg)
+
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.path) || !strings.Contains(err.Error(), "numeric IP address and port") {
+				t.Fatalf("Validate() error = %v, want numeric endpoint error for %s", err, test.path)
+			}
+		})
+	}
+}
+
+func TestValidateRequiresHealthCheckAddress(t *testing.T) {
+	edge := validConfig().Edges[0]
+	edge.HealthCheckAddress = ""
+
+	err := edge.Validate()
+	if err == nil || !strings.Contains(err.Error(), "edge.health_check_address is required") {
+		t.Fatalf("Validate() error = %v, want required health-check address error", err)
 	}
 }
 
@@ -159,37 +217,109 @@ func TestValidateRejectsAllZeroWireGuardKeysWithoutExposingThem(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsEveryASCIIControlByteInEndpointWithoutEchoingIt(t *testing.T) {
+func TestValidateRejectsEveryASCIIControlByteWithoutEchoingIt(t *testing.T) {
+	fields := []struct {
+		name   string
+		path   string
+		change func(*Config, string)
+	}{
+		{
+			name: "geo database",
+			path: "geo_database",
+			change: func(cfg *Config, value string) {
+				cfg.GeoDatabase = value
+			},
+		},
+		{
+			name: "metrics listen",
+			path: "metrics_listen",
+			change: func(cfg *Config, value string) {
+				cfg.MetricsListen = value
+			},
+		},
+		{
+			name: "edge endpoint",
+			path: "edges[0].endpoint",
+			change: func(cfg *Config, value string) {
+				cfg.Edges[0].Endpoint = value
+			},
+		},
+		{
+			name: "health check address",
+			path: "edges[0].health_check_address",
+			change: func(cfg *Config, value string) {
+				cfg.Edges[0].HealthCheckAddress = value
+			},
+		},
+	}
 	controls := make([]byte, 0, 33)
 	for value := range byte(0x20) {
 		controls = append(controls, value)
 	}
 	controls = append(controls, 0x7f)
 
-	for _, control := range controls {
-		t.Run(fmt.Sprintf("%02x", control), func(t *testing.T) {
-			cfg := validConfig()
-			endpoint := fmt.Sprintf("[fe80::1%%eth0%cpublic_key=injected]:51820", control)
-			cfg.Edges[0].Endpoint = endpoint
+	for _, field := range fields {
+		t.Run(field.name, func(t *testing.T) {
+			for _, control := range controls {
+				t.Run(fmt.Sprintf("%02x", control), func(t *testing.T) {
+					cfg := validConfig()
+					value := fmt.Sprintf("192.0.2.1:51820%cinjected", control)
+					field.change(&cfg, value)
 
-			err := cfg.Validate()
-			if err == nil || !strings.Contains(err.Error(), "ASCII control bytes") {
-				t.Fatalf("Validate() error = %v, want ASCII-control error", err)
-			}
-			if strings.Contains(err.Error(), endpoint) || strings.Contains(err.Error(), "public_key=injected") {
-				t.Fatalf("Validate() error exposed injected endpoint content: %q", err)
+					err := cfg.Validate()
+					if err == nil || !strings.Contains(err.Error(), field.path) || !strings.Contains(err.Error(), "ASCII control bytes") {
+						t.Fatalf("Validate() error = %v, want ASCII-control error for %s", err, field.path)
+					}
+					if strings.Contains(err.Error(), value) || strings.Contains(err.Error(), "injected") {
+						t.Fatalf("Validate() error exposed injected field content: %q", err)
+					}
+				})
 			}
 		})
 	}
 }
 
-func TestValidateRejectsZonedEndpoint(t *testing.T) {
-	cfg := validConfig()
-	cfg.Edges[0].Endpoint = "[fe80::1%eth0]:51820"
+func TestValidateRejectsZonedEndpoints(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		change func(*Config)
+	}{
+		{
+			name: "edge endpoint",
+			path: "edges[0].endpoint",
+			change: func(cfg *Config) {
+				cfg.Edges[0].Endpoint = "[fe80::1%eth0]:51820"
+			},
+		},
+		{
+			name: "health check address",
+			path: "edges[0].health_check_address",
+			change: func(cfg *Config) {
+				cfg.Edges[0].OverlayAddress = netip.MustParsePrefix("2001:db8:1::2/64")
+				cfg.Edges[0].AllowedIPs = []netip.Prefix{netip.MustParsePrefix("::/0")}
+				cfg.Edges[0].HealthCheckAddress = "[fe80::1%eth0]:443"
+			},
+		},
+		{
+			name: "metrics listen",
+			path: "metrics_listen",
+			change: func(cfg *Config) {
+				cfg.MetricsListen = "[fe80::1%eth0]:9090"
+			},
+		},
+	}
 
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "must not use an IPv6 zone") {
-		t.Fatalf("Validate() error = %v, want IPv6-zone error", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validConfig()
+			test.change(&cfg)
+
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.path) || !strings.Contains(err.Error(), "must not use an IPv6 zone") {
+				t.Fatalf("Validate() error = %v, want IPv6-zone error for %s", err, test.path)
+			}
+		})
 	}
 }
 
@@ -214,6 +344,64 @@ func TestValidateRejectsAllowedIPFromDifferentOverlayFamily(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want address-family error", err)
 			}
 		})
+	}
+}
+
+func TestValidateRejectsHealthCheckAddressFromDifferentOverlayFamily(t *testing.T) {
+	tests := []struct {
+		name    string
+		overlay string
+		allowed string
+		health  string
+	}{
+		{name: "IPv4 overlay with IPv6 health check", overlay: "10.10.1.2/24", allowed: "0.0.0.0/0", health: "[2001:db8::1]:443"},
+		{name: "IPv6 overlay with IPv4 health check", overlay: "2001:db8:1::2/64", allowed: "::/0", health: "198.51.100.1:443"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			edge := validConfig().Edges[0]
+			edge.OverlayAddress = netip.MustParsePrefix(test.overlay)
+			edge.AllowedIPs = []netip.Prefix{netip.MustParsePrefix(test.allowed)}
+			edge.HealthCheckAddress = test.health
+
+			err := edge.Validate()
+			if err == nil || !strings.Contains(err.Error(), "edge.health_check_address address family must match edge.overlay_address") {
+				t.Fatalf("Validate() error = %v, want health-check address-family error", err)
+			}
+		})
+	}
+}
+
+func TestValidateRequiresFullTunnelAllowedIP(t *testing.T) {
+	edge := validConfig().Edges[0]
+	edge.AllowedIPs = []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}
+
+	err := edge.Validate()
+	if err == nil || !strings.Contains(err.Error(), "edge.allowed_ips must include the address-family default route") {
+		t.Fatalf("Validate() error = %v, want full-tunnel route error", err)
+	}
+}
+
+func TestValidateRequiresAllowedIPToCoverHealthCheck(t *testing.T) {
+	edge := validConfig().Edges[0]
+	edge.AllowedIPs = []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}
+
+	err := edge.Validate()
+	if err == nil || !strings.Contains(err.Error(), "edge.health_check_address must be contained by edge.allowed_ips") {
+		t.Fatalf("Validate() error = %v, want health-check routing error", err)
+	}
+}
+
+func TestValidateRequiresEgressFamilyToMatchIngress(t *testing.T) {
+	cfg := validConfig()
+	cfg.Edges[0].OverlayAddress = netip.MustParsePrefix("2001:db8:1::2/64")
+	cfg.Edges[0].AllowedIPs = []netip.Prefix{netip.MustParsePrefix("::/0")}
+	cfg.Edges[0].HealthCheckAddress = "[2001:db8::1]:443"
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "edges[0].overlay_address address family must match ingress.overlay_address") {
+		t.Fatalf("Validate() error = %v, want ingress/egress family error", err)
 	}
 }
 
@@ -245,6 +433,7 @@ func validConfig() Config {
 			OverlayAddress:      netip.MustParsePrefix("10.10." + octet + ".2/24"),
 			PeerPublicKey:       testKey(byte(20 + index)),
 			Endpoint:            "192.0.2." + octet + ":51820",
+			HealthCheckAddress:  "198.51.100." + octet + ":443",
 			AllowedIPs:          []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")},
 			PersistentKeepalive: Duration(25_000_000_000),
 			Geo: GeoConfig{

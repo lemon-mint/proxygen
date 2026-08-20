@@ -1,25 +1,45 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
+	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/app"
 	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
 )
 
-var errRuntimeUnavailable = errors.New("normal mode unavailable: proxy runtime is not wired")
+type runtime interface {
+	Run(context.Context) error
+	Close() error
+}
+
+var (
+	loadConfig = config.Load
+	newRuntime = func(cfg config.Config) (runtime, error) {
+		return app.New(cfg)
+	}
+)
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runContext(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
+	return runContext(context.Background(), args, stdout, stderr)
+}
+
+func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("proxygen", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "path to JSON configuration")
@@ -34,12 +54,18 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("-config is required")
 	}
 
-	if _, err := config.Load(*configPath); err != nil {
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
 		return err
 	}
 	if *check {
 		_, err := fmt.Fprintln(stdout, "configuration is valid")
 		return err
 	}
-	return errRuntimeUnavailable
+
+	application, err := newRuntime(cfg)
+	if err != nil {
+		return err
+	}
+	return errors.Join(application.Run(ctx), application.Close())
 }

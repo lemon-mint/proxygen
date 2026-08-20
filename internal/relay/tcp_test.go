@@ -145,9 +145,17 @@ func TestTCPBoundedAdmissionAndCancellationCleanup(t *testing.T) {
 	if second.creates != 0 {
 		t.Fatalf("over-capacity CreateConn calls = %d, want 0", second.creates)
 	}
+	snapshot := relay.Snapshot()
+	if snapshot.Admissions != 1 || snapshot.Active != 1 || snapshot.Wins != 0 || snapshot.Failures != 0 {
+		t.Fatalf("active snapshot = %+v, want one admitted active race", snapshot)
+	}
 
 	relay.Close()
 	waitSignal(t, firstObserved.closed, "ingress close")
+	snapshot = relay.Snapshot()
+	if snapshot.Admissions != 1 || snapshot.Active != 0 {
+		t.Fatalf("closed snapshot = %+v, want one admission and no active work", snapshot)
+	}
 	if edge.dials.Load() != 1 {
 		t.Fatalf("DialTCP calls = %d, want 1", edge.dials.Load())
 	}
@@ -216,6 +224,61 @@ func TestTCPRaceSelectsOneWinnerAndClosesEveryLoser(t *testing.T) {
 	winner.Close()
 }
 
+func TestTCPWinnerObservationIsCommittedOnce(t *testing.T) {
+	destination := netip.MustParseAddrPort("192.0.2.40:443")
+	winnerConn, winnerPeer := net.Pipe()
+	defer winnerPeer.Close()
+	source := &observingTCPSource{
+		fakeSource: fakeSource{edges: []egress.Edge{
+			&fakeEdge{
+				id: "winner",
+				dialTCP: func(context.Context, netip.AddrPort) (net.Conn, error) {
+					time.Sleep(time.Millisecond)
+					return winnerConn, nil
+				},
+			},
+			&fakeEdge{
+				id: "loser",
+				dialTCP: func(ctx context.Context, _ netip.AddrPort) (net.Conn, error) {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				},
+			},
+		}},
+		observations: make(chan tcpObservation, 2),
+	}
+	relay := newTestTCP(t, source)
+	defer relay.Close()
+
+	conn := relay.race(destination)
+	if conn == nil {
+		t.Fatal("race returned no winner")
+	}
+	defer conn.Close()
+
+	select {
+	case observation := <-source.observations:
+		if observation.destination != destination || observation.edgeID != "winner" {
+			t.Fatalf("observation = %+v, want destination %v on winner", observation, destination)
+		}
+		if observation.latency <= 0 {
+			t.Fatalf("winner latency = %v, want positive duration", observation.latency)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("winner was not observed")
+	}
+	select {
+	case observation := <-source.observations:
+		t.Fatalf("unexpected second winner observation: %+v", observation)
+	default:
+	}
+
+	snapshot := relay.Snapshot()
+	if snapshot.Wins != 1 || snapshot.Failures != 0 {
+		t.Fatalf("winner snapshot = %+v, want one win and no failures", snapshot)
+	}
+}
+
 func TestTCPAllFailureClosesIngress(t *testing.T) {
 	edges := []egress.Edge{
 		&fakeEdge{id: "a", dialTCP: failDial},
@@ -231,6 +294,10 @@ func TestTCPAllFailureClosesIngress(t *testing.T) {
 	relay.handle(req)
 	req.assertCompletion(t, false)
 	waitSignal(t, observed.closed, "all-failure ingress close")
+	snapshot := relay.Snapshot()
+	if snapshot.Admissions != 1 || snapshot.Active != 0 || snapshot.Wins != 0 || snapshot.Failures != 1 {
+		t.Fatalf("failure snapshot = %+v, want one admitted failed race", snapshot)
+	}
 }
 
 func TestTCPRelaysBothDirections(t *testing.T) {
@@ -381,6 +448,29 @@ func (s fakeSource) Healthy() []egress.Edge {
 
 func (fakeSource) SelectUDP(model.FlowKey) (egress.Edge, error) {
 	return nil, errors.New("not used")
+}
+
+type tcpObservation struct {
+	destination netip.AddrPort
+	edgeID      model.EdgeID
+	latency     time.Duration
+}
+
+type observingTCPSource struct {
+	fakeSource
+	observations chan tcpObservation
+}
+
+func (source *observingTCPSource) ObserveTCP(
+	destination netip.AddrPort,
+	edgeID model.EdgeID,
+	latency time.Duration,
+) {
+	source.observations <- tcpObservation{
+		destination: destination,
+		edgeID:      edgeID,
+		latency:     latency,
+	}
 }
 
 type fakeEdge struct {

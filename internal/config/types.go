@@ -55,11 +55,13 @@ func (duration *Duration) UnmarshalJSON(data []byte) error {
 
 // Config is the complete proxygen configuration.
 type Config struct {
-	MTU      int           `json:"mtu"`
-	Ingress  IngressConfig `json:"ingress"`
-	Edges    []EdgeConfig  `json:"edges"`
-	Timeouts TimeoutConfig `json:"timeouts"`
-	Limits   LimitsConfig  `json:"limits"`
+	MTU           int           `json:"mtu"`
+	GeoDatabase   string        `json:"geo_database"`
+	MetricsListen string        `json:"metrics_listen"`
+	Ingress       IngressConfig `json:"ingress"`
+	Edges         []EdgeConfig  `json:"edges"`
+	Timeouts      TimeoutConfig `json:"timeouts"`
+	Limits        LimitsConfig  `json:"limits"`
 }
 
 // IngressConfig configures the userspace WireGuard device accepting clients.
@@ -83,6 +85,7 @@ type EdgeConfig struct {
 	OverlayAddress      netip.Prefix   `json:"overlay_address"`
 	PeerPublicKey       string         `json:"peer_public_key"`
 	Endpoint            string         `json:"endpoint"`
+	HealthCheckAddress  string         `json:"health_check_address"`
 	AllowedIPs          []netip.Prefix `json:"allowed_ips"`
 	PersistentKeepalive Duration       `json:"persistent_keepalive"`
 	Geo                 GeoConfig      `json:"geo"`

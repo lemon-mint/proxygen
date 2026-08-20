@@ -89,6 +89,10 @@ func TestUDPIdleExpiryReleasesBothSockets(t *testing.T) {
 	awaitClosed(t, ingress.closed)
 	awaitClosed(t, dial.conn.closed)
 	awaitFlowCount(t, relay, 0)
+	snapshot := relay.Snapshot()
+	if snapshot.Mappings != 0 || snapshot.Expired != 1 || snapshot.Dropped != 0 {
+		t.Fatalf("expiry snapshot = %+v, want one expiry and no active mappings or drops", snapshot)
+	}
 	if got := ingress.closeCount(); got != 1 {
 		t.Fatalf("ingress socket closed %d times, want exactly 1", got)
 	}
@@ -123,6 +127,10 @@ func TestUDPMaxFlowAdmissionAndShutdown(t *testing.T) {
 	if factoryCalled {
 		t.Fatal("rejected mapping created an ingress endpoint")
 	}
+	snapshot := relay.Snapshot()
+	if snapshot.Mappings != 1 || snapshot.Expired != 0 || snapshot.Dropped != 1 {
+		t.Fatalf("capacity snapshot = %+v, want one active mapping and one drop", snapshot)
+	}
 
 	if err := relay.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -138,8 +146,38 @@ func TestUDPMaxFlowAdmissionAndShutdown(t *testing.T) {
 	if got := dial.conn.closeCount(); got != 1 {
 		t.Fatalf("egress socket closed %d times, want exactly 1", got)
 	}
+	snapshot = relay.Snapshot()
+	if snapshot.Mappings != 0 || snapshot.Dropped != 1 {
+		t.Fatalf("closed snapshot = %+v, want no active mappings and one drop", snapshot)
+	}
 	if relay.admit(secondKey, staticIngress(newFakeDatagramConn())) {
 		t.Fatal("mapping was admitted after shutdown")
+	}
+	snapshot = relay.Snapshot()
+	if snapshot.Dropped != 2 {
+		t.Fatalf("post-close snapshot = %+v, want two dropped admissions", snapshot)
+	}
+}
+
+func TestUDPSetupFailureDropsMapping(t *testing.T) {
+	source := newFakeUDPSource(nil)
+	relay, err := NewUDP(source, time.Minute, 1)
+	if err != nil {
+		t.Fatalf("NewUDP: %v", err)
+	}
+	defer relay.Close()
+
+	key := testUDPKey("10.0.0.11:34000", "192.0.2.32:53")
+	ingress := newFakeDatagramConn()
+	if !relay.admit(key, staticIngress(ingress)) {
+		t.Fatal("mapping was not admitted")
+	}
+	awaitClosed(t, ingress.closed)
+	awaitFlowCount(t, relay, 0)
+
+	snapshot := relay.Snapshot()
+	if snapshot.Mappings != 0 || snapshot.Expired != 0 || snapshot.Dropped != 1 {
+		t.Fatalf("setup-failure snapshot = %+v, want one dropped mapping", snapshot)
 	}
 }
 

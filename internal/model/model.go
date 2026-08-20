@@ -47,6 +47,12 @@ func isASCIIAlphaNumeric(char byte) bool {
 		char >= '0' && char <= '9'
 }
 
+// GeoPoint is a geographic coordinate in decimal degrees.
+type GeoPoint struct {
+	Latitude  float64
+	Longitude float64
+}
+
 // EdgeState is the current lifecycle and health state of an egress edge.
 type EdgeState uint8
 

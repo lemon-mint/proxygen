@@ -32,9 +32,28 @@ type TCPConfig struct {
 	AbortPending func()
 }
 
+// TCPSnapshot is an atomic point-in-time view of TCP relay activity.
+type TCPSnapshot struct {
+	// Admissions is the cumulative number of requests handed to workers.
+	Admissions uint64 `json:"admissions"`
+	// Active is the number of admitted requests currently dialing or relaying.
+	Active int64 `json:"active"`
+	// Wins and Failures count completed edge races by outcome.
+	Wins     uint64 `json:"wins"`
+	Failures uint64 `json:"failures"`
+}
+
+type tcpStats struct {
+	admissions atomic.Uint64
+	active     atomic.Int64
+	wins       atomic.Uint64
+	failures   atomic.Uint64
+}
+
 // TCP owns the bounded workers that race and relay ingress TCP connections.
 type TCP struct {
 	source         egress.Source
+	observer       egress.TCPObserver
 	connectTimeout time.Duration
 	abortPending   func()
 	buffers        sync.Pool
@@ -50,6 +69,7 @@ type TCP struct {
 	requests  sync.WaitGroup
 	workers   sync.WaitGroup
 	closeOnce sync.Once
+	stats     tcpStats
 }
 
 type tcpJob struct {
@@ -104,12 +124,14 @@ func NewTCP(source egress.Source, cfg TCPConfig) (*TCP, error) {
 	if cfg.AbortPending == nil {
 		return nil, fmt.Errorf("TCP relay pending-request abort callback is required")
 	}
+	observer, _ := source.(egress.TCPObserver)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	capacity := cfg.Workers + cfg.QueueDepth
 	relay := &TCP{
 		source:         source,
 		connectTimeout: cfg.ConnectTimeout,
+		observer:       observer,
 		abortPending:   cfg.AbortPending,
 		ctx:            ctx,
 		cancel:         cancel,
@@ -167,6 +189,7 @@ func (r *TCP) handle(req request) {
 		return
 	}
 	req.Complete(false)
+	r.stats.admissions.Add(1)
 
 	job := tcpJob{
 		ingress: ingress,
@@ -203,6 +226,9 @@ func (r *TCP) process(job tcpJob) {
 		return
 	}
 
+	r.stats.active.Add(1)
+	defer r.stats.active.Add(-1)
+
 	egressConn := r.race(job.destination)
 	if egressConn == nil {
 		return
@@ -223,6 +249,7 @@ func (r *TCP) race(destination netip.AddrPort) net.Conn {
 
 	edges := r.source.Healthy()
 	if len(edges) == 0 {
+		r.stats.failures.Add(1)
 		return nil
 	}
 
@@ -235,7 +262,9 @@ func (r *TCP) race(destination netip.AddrPort) net.Conn {
 	for _, edge := range edges {
 		go func(edge egress.Edge) {
 			defer attempts.Done()
+			started := time.Now()
 			conn, err := edge.DialTCP(ctx, destination)
+			latency := time.Since(started)
 			if err != nil || conn == nil {
 				if conn != nil {
 					conn.Close()
@@ -247,13 +276,20 @@ func (r *TCP) race(destination netip.AddrPort) net.Conn {
 				conn.Close()
 				return
 			}
+			r.stats.wins.Add(1)
 			cancel()
+			if r.observer != nil {
+				r.observer.ObserveTCP(destination, edge.ID(), latency)
+			}
 		}(edge)
 	}
 	attempts.Wait()
 
 	selected := winner.Load()
 	if selected == nil {
+		if r.ctx.Err() == nil {
+			r.stats.failures.Add(1)
+		}
 		return nil
 	}
 	if r.ctx.Err() != nil {
@@ -305,6 +341,19 @@ func (r *TCP) copyDirection(results chan<- error, destination, source net.Conn) 
 		closer.CloseRead()
 	}
 	results <- err
+}
+
+// Snapshot returns relay counters and gauges without blocking the data path.
+func (r *TCP) Snapshot() TCPSnapshot {
+	if r == nil {
+		return TCPSnapshot{}
+	}
+	return TCPSnapshot{
+		Admissions: r.stats.admissions.Load(),
+		Active:     r.stats.active.Load(),
+		Wins:       r.stats.wins.Load(),
+		Failures:   r.stats.failures.Load(),
+	}
 }
 
 // Close rejects new requests, cancels every race and relay, aborts pending

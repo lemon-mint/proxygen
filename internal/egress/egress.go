@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"time"
 
 	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
 )
@@ -16,6 +17,12 @@ type Edge interface {
 	DialTCP(context.Context, netip.AddrPort) (net.Conn, error)
 	DialUDP(context.Context, netip.AddrPort) (net.Conn, error)
 	Close() error
+}
+
+// TCPObserver optionally receives the winning edge and monotonic dial latency
+// for a committed TCP race.
+type TCPObserver interface {
+	ObserveTCP(destination netip.AddrPort, edgeID model.EdgeID, latency time.Duration)
 }
 
 // Source supplies healthy edges to TCP races and pins new UDP flows.

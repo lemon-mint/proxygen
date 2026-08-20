@@ -144,6 +144,7 @@ func validEdgeConfig() config.EdgeConfig {
 		OverlayAddress:      netip.MustParsePrefix("10.10.1.2/24"),
 		PeerPublicKey:       testKey(2),
 		Endpoint:            "[2001:db8::10]:51820",
+		HealthCheckAddress:  "198.51.100.20:443",
 		AllowedIPs:          []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")},
 		PersistentKeepalive: config.Duration(25_000_000_000),
 		Geo: config.GeoConfig{

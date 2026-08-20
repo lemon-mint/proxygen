@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/egress"
@@ -26,6 +27,22 @@ var udpBufferPool = sync.Pool{
 	},
 }
 
+// UDPSnapshot is an atomic point-in-time view of UDP mapping activity.
+type UDPSnapshot struct {
+	// Mappings is the number of currently active full-tuple mappings.
+	Mappings int64 `json:"mappings"`
+	// Expired counts mappings closed by the idle timer.
+	Expired uint64 `json:"expired"`
+	// Dropped counts rejected admissions and mapping setup failures.
+	Dropped uint64 `json:"dropped"`
+}
+
+type udpStats struct {
+	mappings atomic.Int64
+	expired  atomic.Uint64
+	dropped  atomic.Uint64
+}
+
 // UDP owns the literal full-5-tuple UDP mappings for one ingress stack.
 type UDP struct {
 	source      egress.Source
@@ -39,6 +56,7 @@ type UDP struct {
 	closed bool
 	flows  map[model.FlowKey]*udpFlow
 	wg     sync.WaitGroup
+	stats  udpStats
 
 	closeOnce sync.Once
 }
@@ -72,10 +90,12 @@ func NewUDP(source egress.Source, idleTimeout time.Duration, maxFlows int) (*UDP
 // asynchronously so packet delivery is never held up by network operations.
 func (relay *UDP) Handler(request *gvisorudp.ForwarderRequest) bool {
 	if request == nil {
+		relay.stats.dropped.Add(1)
 		return false
 	}
 	key, ok := udpKeyFromEndpointID(request.ID())
 	if !ok {
+		relay.stats.dropped.Add(1)
 		return false
 	}
 
@@ -94,15 +114,18 @@ func (relay *UDP) Handler(request *gvisorudp.ForwarderRequest) bool {
 // behavior without constructing a gVisor packet path.
 func (relay *UDP) admit(key model.FlowKey, openIngress func() (net.Conn, bool)) bool {
 	if key.Protocol != model.ProtocolUDP || key.Validate() != nil || openIngress == nil {
+		relay.stats.dropped.Add(1)
 		return false
 	}
 
 	relay.mu.Lock()
 	defer relay.mu.Unlock()
 	if relay.closed || len(relay.flows) >= relay.maxFlows {
+		relay.stats.dropped.Add(1)
 		return false
 	}
 	if _, exists := relay.flows[key]; exists {
+		relay.stats.dropped.Add(1)
 		return false
 	}
 
@@ -111,6 +134,7 @@ func (relay *UDP) admit(key model.FlowKey, openIngress func() (net.Conn, bool)) 
 		if ingress != nil {
 			_ = ingress.Close()
 		}
+		relay.stats.dropped.Add(1)
 		return false
 	}
 
@@ -123,6 +147,7 @@ func (relay *UDP) admit(key model.FlowKey, openIngress func() (net.Conn, bool)) 
 		lastActivity: time.Now(),
 	}
 	relay.flows[key] = flow
+	relay.stats.mappings.Add(1)
 	relay.wg.Add(1)
 	go relay.run(flow)
 	return true
@@ -135,13 +160,16 @@ func (relay *UDP) run(flow *udpFlow) {
 		relay.mu.Lock()
 		if relay.flows[flow.key] == flow {
 			delete(relay.flows, flow.key)
+			relay.stats.mappings.Add(-1)
 		}
 		relay.mu.Unlock()
 	}()
 
 	expiryDone := make(chan struct{})
 	go func() {
-		flow.expire(relay.idleTimeout)
+		if flow.expire(relay.idleTimeout) {
+			relay.stats.expired.Add(1)
+		}
 		close(expiryDone)
 	}()
 	defer func() {
@@ -151,13 +179,19 @@ func (relay *UDP) run(flow *udpFlow) {
 
 	edge, err := relay.source.SelectUDP(flow.key)
 	if err != nil || edge == nil || flow.ctx.Err() != nil {
+		if flow.ctx.Err() == nil {
+			relay.stats.dropped.Add(1)
+		}
 		return
 	}
 	destination := netip.AddrPortFrom(flow.key.DestinationAddr, flow.key.DestinationPort)
 	egressConn, err := edge.DialUDP(flow.ctx, destination)
-	if err != nil {
+	if err != nil || egressConn == nil {
 		if egressConn != nil {
 			_ = egressConn.Close()
+		}
+		if flow.ctx.Err() == nil {
+			relay.stats.dropped.Add(1)
 		}
 		return
 	}
@@ -192,6 +226,18 @@ func relayUDPDatagrams(flow *udpFlow, source, destination net.Conn, done chan<- 
 			return
 		}
 		flow.touch()
+	}
+}
+
+// Snapshot returns mapping counters and gauges without blocking the data path.
+func (relay *UDP) Snapshot() UDPSnapshot {
+	if relay == nil {
+		return UDPSnapshot{}
+	}
+	return UDPSnapshot{
+		Mappings: relay.stats.mappings.Load(),
+		Expired:  relay.stats.expired.Load(),
+		Dropped:  relay.stats.dropped.Load(),
 	}
 }
 
@@ -252,20 +298,20 @@ func (flow *udpFlow) touch() {
 	flow.mu.Unlock()
 }
 
-func (flow *udpFlow) expire(idleTimeout time.Duration) {
+func (flow *udpFlow) expire(idleTimeout time.Duration) bool {
 	timer := time.NewTimer(idleTimeout)
 	defer timer.Stop()
 	for {
 		select {
 		case <-flow.ctx.Done():
-			return
+			return false
 		case <-timer.C:
 			flow.mu.Lock()
 			remaining := time.Until(flow.lastActivity.Add(idleTimeout))
 			flow.mu.Unlock()
 			if remaining <= 0 {
 				flow.close()
-				return
+				return true
 			}
 			timer.Reset(remaining)
 		}
