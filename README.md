@@ -1,6 +1,6 @@
 # proxygen
 
-Userspace WireGuard proxy built with wireguard-go and gVisor Netstack. It keeps three or four independent egress WireGuard devices, races every healthy edge for each new TCP flow, and relays payload only through the first completed TCP handshake. UDP uses literal full-5-tuple mappings: every tuple receives one edge and an explicitly unique egress source port until the mapping expires.
+Userspace WireGuard proxy built with wireguard-go and gVisor Netstack. It keeps three or four independent egress WireGuard devices, races every healthy edge for each new TCP flow, and relays payload only through the first completed TCP handshake. Internally, UDP is keyed by the literal full 5-tuple and every active tuple receives an explicitly unique overlay source port until the mapping expires. The public Internet mapping still depends on the remote edge's routing or SNAT policy.
 
 No host TUN device or `CAP_NET_ADMIN` is required. The outer WireGuard UDP sockets use the host network normally.
 
@@ -104,6 +104,28 @@ Run in the foreground:
 ```
 
 `SIGINT` and `SIGTERM` trigger ordered shutdown: ingress admission, TCP and UDP flows, egress devices, Geo DB, then the metrics listener.
+
+## Edge NAT requirement
+
+proxygen guarantees full-5-tuple separation and unique UDP source ports only on the WireGuard overlay side. It cannot force an independently administered edge NAT to preserve those mappings.
+
+To expose literal address-and-port-dependent mappings on the public Internet, every edge must use one of:
+
+- A public address routed directly to that WireGuard overlay address, without another NAPT layer.
+- A dedicated public IP with deterministic 1:1 SNAT that preserves proxygen's unique overlay UDP source port independently of the remote destination.
+
+Ordinary `MASQUERADE` is insufficient as a guarantee. It may preserve ports in common cases, but it remains free to remap or reuse an external port according to its conntrack tuple and collision state. A deployment using generic `MASQUERADE` must not claim literal symmetric NAT based on proxygen's internal mapping alone.
+
+Validate every edge after deployment and after firewall/NAT changes:
+
+1. Isolate the edge under test so both probes use that same egress.
+2. Bind one client UDP socket to a fixed source address and port.
+3. Send STUN Binding requests from that socket to two different STUN destination IP:port pairs.
+4. Record `XOR-MAPPED-ADDRESS` for each destination. The two public mapped endpoints must differ.
+5. Repeat each request during the UDP idle window. Requests to the same destination must retain their prior mapped endpoint.
+6. Repeat the procedure for all three or four edges.
+
+Failure at step 4 means the edge SNAT does not provide literal address-and-port-dependent mapping, regardless of the unique overlay ports reported by proxygen.
 
 ## Health and metrics
 
