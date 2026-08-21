@@ -89,6 +89,8 @@ Replace every key placeholder. `endpoint`, `health_check_address`, and `metrics_
 
 A configuration is single-stack: ingress, every egress overlay, every health target, and every `allowed_ips` entry must use the same address family. IPv4 requires `0.0.0.0/0`; an IPv6 deployment uses `::/0`.
 
+Different egress files may reuse the same `Interface.Address`. Every edge owns an isolated gVisor stack and WireGuard device, so provider-assigned overlay addresses only need to be valid within their own edge; edge IDs and non-zero host listen ports must remain unique.
+
 When `geo_database` is set, proxygen opens that local MaxMind City-compatible MMDB without modifying it. When omitted, proxygen conditionally downloads `https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb` into `${TMPDIR}/proxygen/GeoLite2-City.mmdb`. It sends cached `ETag`/`Last-Modified` validators every 24 hours, compares SHA-256 content, validates a new MMDB before atomic replacement, and reloads only when the file changed. A failed refresh keeps a valid cached database. TCP selection always uses live full-edge connection racing; Geo data is a fallback for UDP and cold destinations.
 
 The UDP NAT table uses one shared idle reaper rather than one timer goroutine per mapping. Each active mapping still holds two maximum-size datagram buffers and two blocking packet pumps, so `max_udp_flows` defaults to 512 and is capped at 2048. The buffer-only ceiling is about 64 MiB by default and 256 MiB at the maximum; larger scale requires a readiness-driven multiplexer.

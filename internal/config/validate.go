@@ -44,7 +44,6 @@ func (cfg Config) Validate() error {
 	}
 
 	edgeIDs := make(map[string]int, len(cfg.Edges))
-	edgeAddresses := make(map[netip.Addr]int, len(cfg.Edges))
 	listenPorts := make(map[int]string, len(cfg.Edges)+1)
 	if cfg.Ingress.ListenPort > 0 && cfg.Ingress.ListenPort <= 65535 {
 		listenPorts[cfg.Ingress.ListenPort] = "ingress.listen_port"
@@ -69,14 +68,6 @@ func (cfg Config) Validate() error {
 			add(fmt.Errorf("%s.id duplicates edges[%d].id", path, previous))
 		} else {
 			edgeIDs[idKey] = index
-		}
-		if edge.OverlayAddress.IsValid() {
-			address := edge.OverlayAddress.Addr().Unmap()
-			if previous, exists := edgeAddresses[address]; exists {
-				add(fmt.Errorf("%s.overlay_address duplicates edges[%d].overlay_address", path, previous))
-			} else {
-				edgeAddresses[address] = index
-			}
 		}
 	}
 

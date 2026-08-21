@@ -121,22 +121,24 @@ func TestValidateAllowsOneToFourEdges(t *testing.T) {
 	}
 }
 
-func TestValidateReportsDuplicateEdgeIdentityAndAddress(t *testing.T) {
+func TestValidateReportsDuplicateEdgeIdentity(t *testing.T) {
 	cfg := validConfig()
 	cfg.Edges[1].ID = cfg.Edges[0].ID
-	cfg.Edges[1].OverlayAddress = cfg.Edges[0].OverlayAddress
 
 	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("Validate() error = nil, want duplicate errors")
+	if err == nil || !strings.Contains(err.Error(), "edges[1].id duplicates edges[0].id") {
+		t.Fatalf("Validate() error = %v, want duplicate edge ID error", err)
 	}
-	for _, message := range []string{
-		"edges[1].id duplicates edges[0].id",
-		"edges[1].overlay_address duplicates edges[0].overlay_address",
-	} {
-		if !strings.Contains(err.Error(), message) {
-			t.Errorf("Validate() error = %q, want %q", err, message)
-		}
+}
+
+func TestValidateAllowsDuplicateEgressOverlayAddresses(t *testing.T) {
+	cfg := validConfig()
+	for index := 1; index < len(cfg.Edges); index++ {
+		cfg.Edges[index].OverlayAddress = cfg.Edges[0].OverlayAddress
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected duplicate addresses on independent egress stacks: %v", err)
 	}
 }
 
