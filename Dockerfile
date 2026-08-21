@@ -19,7 +19,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -ldflags="-s -w -buildid=" \
       -o /out/proxygen \
       ./cmd/proxygen && \
-    mkdir -p /runtime/tmp /runtime/etc/proxygen && \
+    mkdir -p /runtime/tmp/proxygen /runtime/etc/proxygen && \
+    chmod 0700 /runtime/tmp/proxygen && \
     chown -R 65532:65532 /runtime
 
 FROM gcr.io/distroless/static-debian12:nonroot
