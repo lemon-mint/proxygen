@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
 	"math"
 	"net/netip"
 	"strings"
@@ -70,8 +71,8 @@ func (cfg Config) Validate() error {
 	if cfg.Limits.TCPRaceQueueDepth < 1 || cfg.Limits.TCPRaceQueueDepth > 1_000_000 {
 		add(fmt.Errorf("limits.tcp_race_queue_depth must be between 1 and 1000000"))
 	}
-	if cfg.Limits.MaxUDPFlows < 1 || cfg.Limits.MaxUDPFlows > 10_000_000 {
-		add(fmt.Errorf("limits.max_udp_flows must be between 1 and 10000000"))
+	if cfg.Limits.MaxUDPFlows < 1 || cfg.Limits.MaxUDPFlows > model.MaxUDPFlows {
+		add(fmt.Errorf("limits.max_udp_flows must be between 1 and %d", model.MaxUDPFlows))
 	}
 	if cfg.Limits.RelayBufferBytes < 1024 || cfg.Limits.RelayBufferBytes > 1<<20 {
 		add(fmt.Errorf("limits.relay_buffer_bytes must be between 1024 and 1048576"))

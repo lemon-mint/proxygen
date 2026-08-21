@@ -60,6 +60,16 @@ func TestDecodeAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUDPFlowLimitAboveMemoryBound(t *testing.T) {
+	cfg := validConfig()
+	cfg.Limits.MaxUDPFlows = model.MaxUDPFlows + 1
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("limits.max_udp_flows must be between 1 and %d", model.MaxUDPFlows)) {
+		t.Fatalf("Validate() error = %v, want UDP relay memory-limit error", err)
+	}
+}
+
 func TestValidateReportsDuplicateEdgeIdentityAndAddress(t *testing.T) {
 	cfg := validConfig()
 	cfg.Edges[1].ID = cfg.Edges[0].ID

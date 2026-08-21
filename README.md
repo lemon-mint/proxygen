@@ -79,7 +79,7 @@ Configuration is strict JSON. Unknown fields, noncanonical or zero WireGuard key
   "limits": {
     "tcp_race_workers": 256,
     "tcp_race_queue_depth": 1024,
-    "max_udp_flows": 16384,
+    "max_udp_flows": 1024,
     "relay_buffer_bytes": 32768
   }
 }
@@ -90,6 +90,8 @@ Replace every key placeholder. `endpoint`, `health_check_address`, and `metrics_
 A configuration is single-stack: ingress, every egress overlay, every health target, and every `allowed_ips` entry must use the same address family. IPv4 requires `0.0.0.0/0`; an IPv6 deployment uses `::/0`.
 
 `geo_database` is optional. When present, it must be a MaxMind City-compatible MMDB. TCP selection always uses live full-edge connection racing; Geo data is a fallback for UDP and cold destinations. A recent TCP winner for the exact destination takes priority for UDP selection.
+
+The current UDP relay holds two maximum-size datagram buffers per active mapping. `max_udp_flows` therefore defaults to 1024 and is capped at 4096; increasing scale beyond that requires replacing the goroutine-per-direction relay with a readiness-driven multiplexer.
 
 Validate without opening sockets:
 

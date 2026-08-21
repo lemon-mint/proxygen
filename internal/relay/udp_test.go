@@ -15,6 +15,14 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
+func TestUDPRejectsFlowLimitAboveMemoryBound(t *testing.T) {
+	relay, err := NewUDP(newFakeUDPSource(newFakeUDPEdge()), time.Minute, model.MaxUDPFlows+1)
+	if err == nil {
+		_ = relay.Close()
+		t.Fatal("NewUDP() accepted a flow limit above the relay memory bound")
+	}
+}
+
 func TestUDPLiteralDestinationsCreateDistinctMappings(t *testing.T) {
 	edge := newFakeUDPEdge()
 	source := newFakeUDPSource(edge)

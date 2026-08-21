@@ -73,6 +73,9 @@ func NewUDP(source egress.Source, idleTimeout time.Duration, maxFlows int) (*UDP
 	if maxFlows <= 0 {
 		return nil, errors.New("maximum UDP flows must be greater than zero")
 	}
+	if maxFlows > model.MaxUDPFlows {
+		return nil, errors.New("maximum UDP flows exceeds the relay memory limit")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &UDP{

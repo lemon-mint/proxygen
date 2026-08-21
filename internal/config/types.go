@@ -20,7 +20,7 @@ const (
 	DefaultShutdownTimeout     = 10 * time.Second
 	DefaultTCPRaceWorkers      = 256
 	DefaultTCPRaceQueueDepth   = 1024
-	DefaultMaxUDPFlows         = 16384
+	DefaultMaxUDPFlows         = 1024
 	DefaultRelayBufferBytes    = 32 * 1024
 )
 
