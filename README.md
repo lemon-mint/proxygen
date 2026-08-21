@@ -1,6 +1,6 @@
 # proxygen
 
-Userspace WireGuard proxy built with wireguard-go and gVisor Netstack. It keeps three or four independent egress WireGuard devices, races every healthy edge for each new TCP flow, and relays payload only through the first completed TCP handshake. Internally, UDP is keyed by the literal full 5-tuple and every active tuple receives an explicitly unique overlay source port until the mapping expires. The public Internet mapping still depends on the remote edge's routing or SNAT policy.
+Userspace WireGuard proxy built with wireguard-go and gVisor Netstack. It keeps up to four independent egress WireGuard devices, races every healthy edge for each new TCP flow, and relays payload only through the first completed TCP handshake. Internally, UDP is keyed by the literal full 5-tuple and every active tuple receives an explicitly unique overlay source port until the mapping expires. The public Internet mapping still depends on the remote edge's routing or SNAT policy.
 
 No host TUN device or `CAP_NET_ADMIN` is required. The outer WireGuard UDP sockets use the host network normally.
 
@@ -79,7 +79,7 @@ Configuration is strict JSON. Unknown fields, noncanonical or zero WireGuard key
   "limits": {
     "tcp_race_workers": 256,
     "tcp_race_queue_depth": 1024,
-    "max_udp_flows": 1024,
+    "max_udp_flows": 512,
     "relay_buffer_bytes": 32768
   }
 }
@@ -89,9 +89,9 @@ Replace every key placeholder. `endpoint`, `health_check_address`, and `metrics_
 
 A configuration is single-stack: ingress, every egress overlay, every health target, and every `allowed_ips` entry must use the same address family. IPv4 requires `0.0.0.0/0`; an IPv6 deployment uses `::/0`.
 
-`geo_database` is optional. When present, it must be a MaxMind City-compatible MMDB. TCP selection always uses live full-edge connection racing; Geo data is a fallback for UDP and cold destinations. A recent TCP winner for the exact destination takes priority for UDP selection.
+When `geo_database` is set, proxygen opens that local MaxMind City-compatible MMDB without modifying it. When omitted, proxygen conditionally downloads `https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb` into `${TMPDIR}/proxygen/GeoLite2-City.mmdb`. It sends cached `ETag`/`Last-Modified` validators every 24 hours, compares SHA-256 content, validates a new MMDB before atomic replacement, and reloads only when the file changed. A failed refresh keeps a valid cached database. TCP selection always uses live full-edge connection racing; Geo data is a fallback for UDP and cold destinations.
 
-The current UDP relay holds two maximum-size datagram buffers per active mapping. `max_udp_flows` therefore defaults to 1024 and is capped at 4096; increasing scale beyond that requires replacing the goroutine-per-direction relay with a readiness-driven multiplexer.
+The UDP NAT table uses one shared idle reaper rather than one timer goroutine per mapping. Each active mapping still holds two maximum-size datagram buffers and two blocking packet pumps, so `max_udp_flows` defaults to 512 and is capped at 2048. The buffer-only ceiling is about 64 MiB by default and 256 MiB at the maximum; larger scale requires a readiness-driven multiplexer.
 
 ### Client destination ACL
 
@@ -125,7 +125,7 @@ Custom policies use ordered first-match rules:
 
 ### WireGuard directory import
 
-Egress edges may be provided as inline JSON, `.conf` files, or a mixture. The merged total must be three or four.
+Egress edges may be provided as inline JSON, `.conf` files, or a mixture. The merged total must be between one and four.
 
 ```json
 {
@@ -152,6 +152,8 @@ PersistentKeepalive = 25
 ```
 
 Exactly one `Interface` address and one `Peer` are supported per file. `Endpoint` must be numeric. `DNS`, `MTU`, `Table`, `FwMark`, `SaveConfig`, and wg-quick shell-hook keys are not applied; shell hooks are never executed. The JSON-level MTU and userspace routing remain authoritative.
+
+Egress `ListenPort` should normally be omitted so the host selects an ephemeral port. If specified, every non-zero egress listen port must be unique and must not equal the ingress listen port; duplicate wildcard UDP4/UDP6 binds are rejected during configuration validation.
 
 All imported edges use `wireguard_health_check_address`. With `geo_database`, an imported edge location is derived from its endpoint IP; otherwise selection falls back to measured probe RTT and TCP winner history.
 
@@ -187,7 +189,7 @@ Validate every edge after deployment and after firewall/NAT changes:
 3. Send STUN Binding requests from that socket to two different STUN destination IP:port pairs.
 4. Record `XOR-MAPPED-ADDRESS` for each destination. The two public mapped endpoints must differ.
 5. Repeat each request during the UDP idle window. Requests to the same destination must retain their prior mapped endpoint.
-6. Repeat the procedure for all three or four edges.
+6. Repeat the procedure for every configured edge.
 
 Failure at step 4 means the edge SNAT does not provide literal address-and-port-dependent mapping, regardless of the unique overlay ports reported by proxygen.
 
@@ -195,12 +197,17 @@ Failure at step 4 means the edge SNAT does not provide literal address-and-port-
 
 When `metrics_listen` is configured, it must use `127.0.0.0/8` or `::1`. Host-local processes can access it; WireGuard clients cannot reach it through the userspace data plane because the listener is outside gVisor and the built-in destination ACL rejects loopback.
 
-- `GET /healthz` returns HTTP 200 only when at least three edges are healthy; otherwise 503.
+- `GET /healthz` returns HTTP 200 when at least one edge is healthy; otherwise 503.
 - `GET /metrics` returns JSON edge states, probe RTT/failure counts, TCP race/ACL counters, and UDP mapping/ACL counters.
 
 For remote collection, keep the listener on loopback and use an authenticated host-side reverse proxy or SSH tunnel.
 
 Edge health is based on TCP probes sent through each independent egress Netstack. Configuring or bringing up a WireGuard device alone does not mark it healthy.
+
+## Protocol support
+
+The current data plane terminates and relays TCP and UDP only. Ingress ICMPv4/ICMPv6, echo requests, ICMP errors, and arbitrary non-TCP/UDP IP protocols are not forwarded through an edge. Supporting them requires a separate ICMP/raw-packet relay with checksum rewriting, response correlation, ACL semantics, and edge-side source translation; the TCP/UDP L4 relay cannot transparently provide that path.
+
 
 ## Data-plane invariants
 

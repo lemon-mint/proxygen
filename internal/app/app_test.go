@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/edgepool"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/egress"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/netstack"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/relay"
+	"git.gosuda.org/lemon-mint/proxygen/internal/config"
+	"git.gosuda.org/lemon-mint/proxygen/internal/edgepool"
+	"git.gosuda.org/lemon-mint/proxygen/internal/egress"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/netstack"
+	"git.gosuda.org/lemon-mint/proxygen/internal/relay"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	gvisorudp "gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 )
@@ -127,14 +127,14 @@ func TestMetricsListenFailureUnwindsReverseConstructionOrder(t *testing.T) {
 	}
 }
 
-func TestHealthHandlerRequiresThreeHealthyEdges(t *testing.T) {
+func TestHealthHandlerRequiresOneHealthyEdge(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		healthy int
 		status  int
 	}{
-		{name: "degraded", healthy: 2, status: http.StatusServiceUnavailable},
-		{name: "healthy", healthy: 3, status: http.StatusOK},
+		{name: "unavailable", healthy: 0, status: http.StatusServiceUnavailable},
+		{name: "healthy", healthy: 1, status: http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			snapshots := fakeSnapshots{edges: edgepool.Snapshot{Healthy: test.healthy}}
@@ -270,7 +270,7 @@ func (snapshots fakeSnapshots) udpSnapshot() relay.UDPSnapshot  { return snapsho
 
 func fakeDependencies() dependencies {
 	return dependencies{
-		openGeo: func(string) (geoDatabase, error) { return nil, errors.New("unexpected geo open") },
+		openGeo: func(string) (geoDatabase, error) { return &fakeGeo{events: &eventLog{}}, nil },
 		newEdgePool: func(config.Config, edgepool.LocateFunc) (edgeRuntime, error) {
 			return nil, errors.New("unexpected edge pool construction")
 		},

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
+	"git.gosuda.org/lemon-mint/proxygen/internal/config"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"

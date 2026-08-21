@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 )
 
 func loadWireGuardDirectory(directory, healthCheckAddress string) ([]EdgeConfig, error) {

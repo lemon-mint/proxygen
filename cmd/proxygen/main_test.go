@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
+	"git.gosuda.org/lemon-mint/proxygen/internal/config"
 )
 
 func TestCheckModeOnlyLoadsConfiguration(t *testing.T) {

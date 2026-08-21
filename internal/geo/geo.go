@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"sync"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 	"github.com/oschwald/maxminddb-golang/v2"
 )
 

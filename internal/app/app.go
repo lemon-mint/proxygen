@@ -12,15 +12,15 @@ import (
 	"sync"
 	"time"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/acl"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/edgepool"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/egress"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/geo"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/netstack"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/relay"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/wgdevice"
+	"git.gosuda.org/lemon-mint/proxygen/internal/acl"
+	"git.gosuda.org/lemon-mint/proxygen/internal/config"
+	"git.gosuda.org/lemon-mint/proxygen/internal/edgepool"
+	"git.gosuda.org/lemon-mint/proxygen/internal/egress"
+	"git.gosuda.org/lemon-mint/proxygen/internal/geo"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/netstack"
+	"git.gosuda.org/lemon-mint/proxygen/internal/relay"
+	"git.gosuda.org/lemon-mint/proxygen/internal/wgdevice"
 	"golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	gvisorudp "gvisor.dev/gvisor/pkg/tcpip/transport/udp"
@@ -71,7 +71,7 @@ type dependencies struct {
 
 var defaultDependencies = dependencies{
 	openGeo: func(path string) (geoDatabase, error) {
-		return geo.Open(path)
+		return geo.OpenResolver(path)
 	},
 	newEdgePool: func(cfg config.Config, locate edgepool.LocateFunc) (edgeRuntime, error) {
 		return edgepool.New(cfg, locate, nil)
@@ -151,21 +151,18 @@ func newApp(cfg config.Config, deps dependencies) (_ *App, resultErr error) {
 		return nil, err
 	}
 
-	var locate edgepool.LocateFunc
-	if cfg.GeoDatabase != "" {
-		database, err := deps.openGeo(cfg.GeoDatabase)
-		if err != nil {
-			return nil, fmt.Errorf("open geographic database: %w", err)
-		}
-		if database == nil {
-			return nil, errors.New("open geographic database: opener returned nil database")
-		}
-		application.geo = database
-		cleanups = append(cleanups, func() error {
-			return wrapCloseError("close geographic database", database.Close())
-		})
-		locate = database.Lookup
+	database, err := deps.openGeo(cfg.GeoDatabase)
+	if err != nil {
+		return nil, fmt.Errorf("open geographic database: %w", err)
 	}
+	if database == nil {
+		return nil, errors.New("open geographic database: opener returned nil database")
+	}
+	application.geo = database
+	cleanups = append(cleanups, func() error {
+		return wrapCloseError("close geographic database", database.Close())
+	})
+	locate := edgepool.LocateFunc(database.Lookup)
 
 	edges, err := deps.newEdgePool(cfg, locate)
 	if err != nil {

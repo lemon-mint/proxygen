@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/egress"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/netstack"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/relay"
+	"git.gosuda.org/lemon-mint/proxygen/internal/egress"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/netstack"
+	"git.gosuda.org/lemon-mint/proxygen/internal/relay"
 	"golang.zx2c4.com/wireguard/tun"
 )
 

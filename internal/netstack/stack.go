@@ -9,6 +9,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 )
@@ -40,6 +41,8 @@ func buildStack(mtu, maxTCPInFlight int, handlers Handlers) (*stack.Stack, *chan
 		TransportProtocols: []stack.TransportProtocolFactory{
 			tcp.NewProtocol,
 			udp.NewProtocol,
+			icmp.NewProtocol4,
+			icmp.NewProtocol6,
 		},
 		HandleLocal: false,
 	})
@@ -72,6 +75,12 @@ func buildStack(mtu, maxTCPInFlight int, handlers Handlers) (*stack.Stack, *chan
 	// NewIngress makes the device observable or emits EventUp.
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpHandler)
+	// Consume unsupported ICMP explicitly. Without default handlers, gVisor's
+	// IPv6 endpoint synthesizes echo replies for temporary promiscuous
+	// destinations, making arbitrary remote pings appear successful locally.
+	dropICMP := func(stack.TransportEndpointID, *stack.PacketBuffer) bool { return true }
+	s.SetTransportProtocolHandler(icmp.ProtocolNumber4, dropICMP)
+	s.SetTransportProtocolHandler(icmp.ProtocolNumber6, dropICMP)
 
 	return s, ep, tcpForwarder, udpHandler, nil
 }

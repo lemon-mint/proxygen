@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 	"math"
 	"net/netip"
 	"strings"
@@ -39,18 +39,29 @@ func (cfg Config) Validate() error {
 		add(cfg.DestinationACL.validate())
 	}
 	add(cfg.Ingress.validate())
-	if len(cfg.Edges) < 3 || len(cfg.Edges) > 4 {
-		add(fmt.Errorf("edges must contain 3 or 4 entries; got %d", len(cfg.Edges)))
+	if len(cfg.Edges) < 1 || len(cfg.Edges) > 4 {
+		add(fmt.Errorf("edges must contain between 1 and 4 entries; got %d", len(cfg.Edges)))
 	}
 
 	edgeIDs := make(map[string]int, len(cfg.Edges))
 	edgeAddresses := make(map[netip.Addr]int, len(cfg.Edges))
+	listenPorts := make(map[int]string, len(cfg.Edges)+1)
+	if cfg.Ingress.ListenPort > 0 && cfg.Ingress.ListenPort <= 65535 {
+		listenPorts[cfg.Ingress.ListenPort] = "ingress.listen_port"
+	}
 	for index, edge := range cfg.Edges {
 		path := fmt.Sprintf("edges[%d]", index)
 		add(edge.validate(path))
 		if cfg.Ingress.OverlayAddress.IsValid() && edge.OverlayAddress.IsValid() &&
 			cfg.Ingress.OverlayAddress.Addr().Unmap().Is4() != edge.OverlayAddress.Addr().Unmap().Is4() {
 			add(fmt.Errorf("%s.overlay_address address family must match ingress.overlay_address", path))
+		}
+		if edge.ListenPort != 0 {
+			if previous, exists := listenPorts[edge.ListenPort]; exists {
+				add(fmt.Errorf("%s.listen_port duplicates %s", path, previous))
+			} else {
+				listenPorts[edge.ListenPort] = path + ".listen_port"
+			}
 		}
 
 		idKey := string(edge.ID)

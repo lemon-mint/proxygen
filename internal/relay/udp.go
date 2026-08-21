@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/egress"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/egress"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	gvisorudp "gvisor.dev/gvisor/pkg/tcpip/transport/udp"
@@ -55,11 +55,12 @@ type UDP struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu     sync.Mutex
-	closed bool
-	flows  map[model.FlowKey]*udpFlow
-	wg     sync.WaitGroup
-	stats  udpStats
+	mu       sync.Mutex
+	closed   bool
+	flows    map[model.FlowKey]*udpFlow
+	wg       sync.WaitGroup
+	reaperWG sync.WaitGroup
+	stats    udpStats
 
 	closeOnce sync.Once
 }
@@ -84,7 +85,7 @@ func NewUDP(source egress.Source, idleTimeout time.Duration, maxFlows int, allow
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	return &UDP{
+	relay := &UDP{
 		source:           source,
 		idleTimeout:      idleTimeout,
 		maxFlows:         maxFlows,
@@ -92,7 +93,10 @@ func NewUDP(source egress.Source, idleTimeout time.Duration, maxFlows int, allow
 		ctx:              ctx,
 		cancel:           cancel,
 		flows:            make(map[model.FlowKey]*udpFlow),
-	}, nil
+	}
+	relay.reaperWG.Add(1)
+	go relay.reapIdleFlows()
+	return relay, nil
 }
 
 // Handler is a synchronous gVisor UDP forwarder handler. It only validates and
@@ -179,18 +183,6 @@ func (relay *UDP) run(flow *udpFlow) {
 		relay.mu.Unlock()
 	}()
 
-	expiryDone := make(chan struct{})
-	go func() {
-		if flow.expire(relay.idleTimeout) {
-			relay.stats.expired.Add(1)
-		}
-		close(expiryDone)
-	}()
-	defer func() {
-		flow.close()
-		<-expiryDone
-	}()
-
 	edge, err := relay.source.SelectUDP(flow.key)
 	if err != nil || edge == nil || flow.ctx.Err() != nil {
 		if flow.ctx.Err() == nil {
@@ -219,6 +211,41 @@ func (relay *UDP) run(flow *udpFlow) {
 	<-pumpDone
 	flow.close()
 	<-pumpDone
+}
+func (relay *UDP) reapIdleFlows() {
+	defer relay.reaperWG.Done()
+	interval := relay.idleTimeout / 2
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-relay.ctx.Done():
+			return
+		case now := <-ticker.C:
+			relay.expireIdleFlows(now)
+		}
+	}
+}
+
+func (relay *UDP) expireIdleFlows(now time.Time) {
+	relay.mu.Lock()
+	flows := make([]*udpFlow, 0, len(relay.flows))
+	for _, flow := range relay.flows {
+		flows = append(flows, flow)
+	}
+	relay.mu.Unlock()
+	for _, flow := range flows {
+		if flow.markExpired(now, relay.idleTimeout) {
+			relay.stats.expired.Add(1)
+			flow.close()
+		}
+	}
 }
 
 func relayUDPDatagrams(flow *udpFlow, source, destination net.Conn, done chan<- struct{}) {
@@ -273,6 +300,7 @@ func (relay *UDP) Close() error {
 			flow.close()
 		}
 		relay.wg.Wait()
+		relay.reaperWG.Wait()
 	})
 	return nil
 }
@@ -286,6 +314,7 @@ type udpFlow struct {
 	mu           sync.Mutex
 	egress       net.Conn
 	closed       bool
+	expiring     bool
 	lastActivity time.Time
 	closeOnce    sync.Once
 }
@@ -295,7 +324,7 @@ func (flow *udpFlow) attachEgress(conn net.Conn) bool {
 		return false
 	}
 	flow.mu.Lock()
-	if flow.closed {
+	if flow.closed || flow.expiring {
 		flow.mu.Unlock()
 		_ = conn.Close()
 		return false
@@ -307,30 +336,20 @@ func (flow *udpFlow) attachEgress(conn net.Conn) bool {
 
 func (flow *udpFlow) touch() {
 	flow.mu.Lock()
-	if !flow.closed {
+	if !flow.closed && !flow.expiring {
 		flow.lastActivity = time.Now()
 	}
 	flow.mu.Unlock()
 }
 
-func (flow *udpFlow) expire(idleTimeout time.Duration) bool {
-	timer := time.NewTimer(idleTimeout)
-	defer timer.Stop()
-	for {
-		select {
-		case <-flow.ctx.Done():
-			return false
-		case <-timer.C:
-			flow.mu.Lock()
-			remaining := time.Until(flow.lastActivity.Add(idleTimeout))
-			flow.mu.Unlock()
-			if remaining <= 0 {
-				flow.close()
-				return true
-			}
-			timer.Reset(remaining)
-		}
+func (flow *udpFlow) markExpired(now time.Time, idleTimeout time.Duration) bool {
+	flow.mu.Lock()
+	defer flow.mu.Unlock()
+	if flow.closed || flow.expiring || now.Before(flow.lastActivity.Add(idleTimeout)) {
+		return false
 	}
+	flow.expiring = true
+	return true
 }
 
 func (flow *udpFlow) close() {

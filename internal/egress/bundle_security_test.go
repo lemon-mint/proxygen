@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
+	"git.gosuda.org/lemon-mint/proxygen/internal/config"
 )
 
 func TestEdgeUAPIRejectsAllZeroKeysWithoutEmittingConfiguration(t *testing.T) {

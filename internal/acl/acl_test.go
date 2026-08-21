@@ -4,8 +4,8 @@ import (
 	"net/netip"
 	"testing"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/config"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 )
 
 func TestDefaultPolicyRejectsSpecialUseDestinations(t *testing.T) {

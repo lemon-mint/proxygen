@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 	"golang.zx2c4.com/wireguard/device"
 )
 
@@ -70,6 +70,20 @@ func TestValidateRejectsUDPFlowLimitAboveMemoryBound(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsOneToFourEdges(t *testing.T) {
+	cfg := validConfig()
+	cfg.Edges = cfg.Edges[:1]
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected one edge: %v", err)
+	}
+
+	cfg.Edges = nil
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "edges must contain between 1 and 4 entries") {
+		t.Fatalf("Validate() error = %v, want empty-edge error", err)
+	}
+}
+
 func TestValidateReportsDuplicateEdgeIdentityAndAddress(t *testing.T) {
 	cfg := validConfig()
 	cfg.Edges[1].ID = cfg.Edges[0].ID
@@ -86,6 +100,40 @@ func TestValidateReportsDuplicateEdgeIdentityAndAddress(t *testing.T) {
 		if !strings.Contains(err.Error(), message) {
 			t.Errorf("Validate() error = %q, want %q", err, message)
 		}
+	}
+}
+
+func TestValidateRejectsWireGuardListenPortCollisions(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*Config)
+		want      string
+	}{
+		{
+			name: "ingress and edge",
+			configure: func(cfg *Config) {
+				cfg.Edges[0].ListenPort = cfg.Ingress.ListenPort
+			},
+			want: "edges[0].listen_port duplicates ingress.listen_port",
+		},
+		{
+			name: "two edges",
+			configure: func(cfg *Config) {
+				cfg.Edges[0].ListenPort = 42000
+				cfg.Edges[1].ListenPort = 42000
+			},
+			want: "edges[1].listen_port duplicates edges[0].listen_port",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validConfig()
+			test.configure(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

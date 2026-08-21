@@ -53,10 +53,9 @@ type GeoPoint struct {
 	Longitude float64
 }
 
-// MaxUDPFlows bounds the goroutine-per-direction UDP relay. Each active flow
-// holds two maximum-size datagram buffers, so larger values require a
-// multiplexed relay implementation rather than a higher configuration limit.
-const MaxUDPFlows = 4096
+// MaxUDPFlows bounds the NAT table and its two blocking packet pumps per
+// mapping. Larger values require a readiness-driven multiplexed relay.
+const MaxUDPFlows = 2048
 
 // EdgeState is the current lifecycle and health state of an egress edge.
 type EdgeState uint8

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/netip"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/config"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 )
 
 type action uint8

@@ -8,7 +8,7 @@ import (
 	"net/netip"
 	"time"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 )
 
 // Edge is one independently owned egress path.

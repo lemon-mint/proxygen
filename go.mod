@@ -1,4 +1,4 @@
-module git.sepolia.gosuda.org/lemon-mint/proxygen
+module git.gosuda.org/lemon-mint/proxygen
 
 go 1.26.3
 

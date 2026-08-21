@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 )
 
 func TestOpenRejectsInvalidPath(t *testing.T) {

@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/edgepool"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/relay"
+	"git.gosuda.org/lemon-mint/proxygen/internal/edgepool"
+	"git.gosuda.org/lemon-mint/proxygen/internal/relay"
 )
 
-const minimumHealthyEdges = 3
+const minimumHealthyEdges = 1
 
 type snapshotSource interface {
 	edgeSnapshot() edgepool.Snapshot

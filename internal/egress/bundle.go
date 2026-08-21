@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
-	localnetstack "git.sepolia.gosuda.org/lemon-mint/proxygen/internal/netstack"
+	"git.gosuda.org/lemon-mint/proxygen/internal/config"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
+	localnetstack "git.gosuda.org/lemon-mint/proxygen/internal/netstack"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"

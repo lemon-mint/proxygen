@@ -8,7 +8,7 @@ import (
 	"net/netip"
 	"time"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/model"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 )
 
 const (
@@ -20,7 +20,7 @@ const (
 	DefaultShutdownTimeout     = 10 * time.Second
 	DefaultTCPRaceWorkers      = 256
 	DefaultTCPRaceQueueDepth   = 1024
-	DefaultMaxUDPFlows         = 1024
+	DefaultMaxUDPFlows         = 512
 	DefaultRelayBufferBytes    = 32 * 1024
 )
 

@@ -10,8 +10,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/app"
-	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
+	"git.gosuda.org/lemon-mint/proxygen/internal/app"
+	"git.gosuda.org/lemon-mint/proxygen/internal/config"
 )
 
 type runtime interface {

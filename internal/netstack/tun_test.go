@@ -13,6 +13,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -97,6 +98,78 @@ func TestNewIngressConfiguresUserspaceStackBeforeEventUp(t *testing.T) {
 	default:
 		t.Fatal("EventUp was not published by the constructor")
 	}
+}
+func TestIngressConsumesUnsupportedICMPEchoWithoutSyntheticReply(t *testing.T) {
+	tests := []struct {
+		name     string
+		packet   []byte
+		protocol tcpip.TransportProtocolNumber
+	}{
+		{name: "IPv4", packet: icmpv4EchoRequest(), protocol: header.ICMPv4ProtocolNumber},
+		{name: "IPv6", packet: icmpv6EchoRequest(), protocol: header.ICMPv6ProtocolNumber},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dev := newTestIngress(t)
+			if dev.stack.TransportProtocolInstance(test.protocol) == nil {
+				t.Fatalf("ICMP transport protocol %d is not registered", test.protocol)
+			}
+			if written, err := dev.Write([][]byte{test.packet}, 0); err != nil || written != 1 {
+				t.Fatalf("Write() = %d, %v; want 1, nil", written, err)
+			}
+			if queued := dev.ep.NumQueued(); queued != 0 {
+				t.Fatalf("unsupported %s echo produced %d synthetic outbound packet(s)", test.name, queued)
+			}
+		})
+	}
+}
+
+func icmpv4EchoRequest() []byte {
+	packet := make([]byte, header.IPv4MinimumSize+header.ICMPv4MinimumSize)
+	source := tcpip.AddrFrom4([4]byte{10, 77, 0, 2})
+	destination := tcpip.AddrFrom4([4]byte{8, 8, 8, 8})
+	ip := header.IPv4(packet)
+	ip.Encode(&header.IPv4Fields{
+		TotalLength: uint16(len(packet)),
+		TTL:         64,
+		Protocol:    uint8(header.ICMPv4ProtocolNumber),
+		SrcAddr:     source,
+		DstAddr:     destination,
+	})
+	ip.SetChecksum(^ip.CalculateChecksum())
+	icmp := header.ICMPv4(packet[header.IPv4MinimumSize:])
+	icmp.SetType(header.ICMPv4Echo)
+	icmp.SetCode(0)
+	icmp.SetIdent(7)
+	icmp.SetSequence(11)
+	icmp.SetChecksum(^checksum.Checksum(icmp, 0))
+	return packet
+}
+
+func icmpv6EchoRequest() []byte {
+	packet := make([]byte, header.IPv6MinimumSize+header.ICMPv6EchoMinimumSize)
+	source := tcpip.AddrFrom16([16]byte{0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2})
+	destination := tcpip.AddrFrom16([16]byte{0x26, 0x06, 0x47, 0, 0x47, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x11, 0x11})
+	ip := header.IPv6(packet)
+	ip.Encode(&header.IPv6Fields{
+		PayloadLength:     header.ICMPv6EchoMinimumSize,
+		TransportProtocol: header.ICMPv6ProtocolNumber,
+		HopLimit:          64,
+		SrcAddr:           source,
+		DstAddr:           destination,
+	})
+	icmp := header.ICMPv6(packet[header.IPv6MinimumSize:])
+	icmp.SetType(header.ICMPv6EchoRequest)
+	icmp.SetCode(0)
+	icmp.SetIdent(7)
+	icmp.SetSequence(11)
+	icmp.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
+		Header:     icmp,
+		Src:        source,
+		Dst:        destination,
+		PayloadLen: 0,
+	}))
+	return packet
 }
 
 func TestNewIngressRejectsInvalidArguments(t *testing.T) {
