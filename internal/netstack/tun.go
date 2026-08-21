@@ -14,7 +14,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
-	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 )
 
 const (
@@ -31,7 +30,7 @@ type Ingress struct {
 	stack        *stack.Stack
 	ep           *channel.Endpoint
 	tcpForwarder *tcp.Forwarder
-	udpForwarder *udp.Forwarder
+	udpHandler   udpTransportHandler
 	notifyHandle *channel.NotificationHandle
 
 	events chan tun.Event
@@ -64,12 +63,12 @@ func NewIngress(mtu, maxTCPInFlight int, handlers Handlers) (*Ingress, error) {
 		return nil, fmt.Errorf("UDP handler is required")
 	}
 
-	s, ep, tcpForwarder, udpForwarder, err := buildStack(mtu, maxTCPInFlight, handlers)
+	s, ep, tcpForwarder, udpHandler, err := buildStack(mtu, maxTCPInFlight, handlers)
 	if err != nil {
 		return nil, err
 	}
 
-	return newChannelIngress(ingressName, mtu, s, ep, tcpForwarder, udpForwarder), nil
+	return newChannelIngress(ingressName, mtu, s, ep, tcpForwarder, udpHandler), nil
 }
 
 func newChannelIngress(
@@ -78,7 +77,7 @@ func newChannelIngress(
 	s *stack.Stack,
 	ep *channel.Endpoint,
 	tcpForwarder *tcp.Forwarder,
-	udpForwarder *udp.Forwarder,
+	udpHandler udpTransportHandler,
 ) *Ingress {
 	ingress := &Ingress{
 		name:         name,
@@ -86,7 +85,7 @@ func newChannelIngress(
 		stack:        s,
 		ep:           ep,
 		tcpForwarder: tcpForwarder,
-		udpForwarder: udpForwarder,
+		udpHandler:   udpHandler,
 		events:       make(chan tun.Event, 1),
 		ready:        make(chan struct{}, 1),
 		closed:       make(chan struct{}),

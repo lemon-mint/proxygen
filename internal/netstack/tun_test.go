@@ -60,8 +60,8 @@ func TestNewIngressConfiguresUserspaceStackBeforeEventUp(t *testing.T) {
 	if got := dev.BatchSize(); got != conn.IdealBatchSize {
 		t.Fatalf("BatchSize = %d; want %d", got, conn.IdealBatchSize)
 	}
-	if dev.tcpForwarder == nil || dev.udpForwarder == nil {
-		t.Fatal("transport forwarders were not installed")
+	if dev.tcpForwarder == nil || dev.udpHandler == nil {
+		t.Fatal("transport handlers were not installed")
 	}
 
 	info, ok := dev.stack.SingleNICInfo(ingressNICID)

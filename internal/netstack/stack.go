@@ -25,8 +25,9 @@ type Handlers struct {
 	TCP func(*tcp.ForwarderRequest)
 	UDP udp.ForwarderHandler
 }
+type udpTransportHandler func(stack.TransportEndpointID, *stack.PacketBuffer) bool
 
-func buildStack(mtu, maxTCPInFlight int, handlers Handlers) (*stack.Stack, *channel.Endpoint, *tcp.Forwarder, *udp.Forwarder, error) {
+func buildStack(mtu, maxTCPInFlight int, handlers Handlers) (*stack.Stack, *channel.Endpoint, *tcp.Forwarder, udpTransportHandler, error) {
 	ep := channel.New(outboundQueueSize, uint32(mtu), "")
 	// HandleLocal must remain false on this promiscuous ingress NIC. With it
 	// enabled, gVisor treats every unassigned packet source as a temporary local
@@ -66,13 +67,23 @@ func buildStack(mtu, maxTCPInFlight int, handlers Handlers) (*stack.Stack, *chan
 	})
 
 	tcpForwarder := tcp.NewForwarder(s, 0, maxTCPInFlight, handlers.TCP)
-	udpForwarder := udp.NewForwarder(s, handlers.UDP)
+	udpHandler := makeUDPTransportHandler(s, handlers.UDP)
 	// Transport handlers are initialization-only in gVisor. Install both before
 	// NewIngress makes the device observable or emits EventUp.
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
-	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
+	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpHandler)
 
-	return s, ep, tcpForwarder, udpForwarder, nil
+	return s, ep, tcpForwarder, udpHandler, nil
+}
+
+// makeUDPTransportHandler deliberately bypasses udp.NewForwarder. That helper
+// clones every first packet without releasing the clone in the selected gVisor
+// revision. Our UDP handler creates its endpoint synchronously before returning,
+// so a stack-owned packet can be borrowed safely for the duration of this call.
+func makeUDPTransportHandler(s *stack.Stack, handler udp.ForwarderHandler) udpTransportHandler {
+	return func(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
+		return handler(udp.NewForwarderRequest(s, id, pkt))
+	}
 }
 
 func tcpipError(operation string, err tcpip.Error) error {
