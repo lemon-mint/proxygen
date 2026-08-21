@@ -82,6 +82,13 @@ func (server *metricsServer) close(timeout time.Duration) error {
 
 func newControlHandler(snapshots snapshotSource) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/" {
+			http.NotFound(writer, request)
+			return
+		}
+		http.Redirect(writer, request, "/metrics", http.StatusTemporaryRedirect)
+	})
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		edges := snapshots.edgeSnapshot()
 		healthy := edges.Healthy >= minimumHealthyEdges
@@ -92,6 +99,9 @@ func newControlHandler(snapshots snapshotSource) http.Handler {
 		writeJSON(writer, status, healthSnapshot{Healthy: healthy, Edges: edges.Healthy})
 	})
 	mux.HandleFunc("GET /metrics", func(writer http.ResponseWriter, _ *http.Request) {
+		writeDashboard(writer, snapshots)
+	})
+	mux.HandleFunc("GET /api/metrics", func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, http.StatusOK, metricsSnapshot{
 			Edges: snapshots.edgeSnapshot(),
 			TCP:   snapshots.tcpSnapshot(),

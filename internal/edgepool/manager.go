@@ -46,6 +46,10 @@ type EdgeSnapshot struct {
 	ID                  model.EdgeID    `json:"id"`
 	State               model.EdgeState `json:"state"`
 	ProbeRTT            time.Duration   `json:"probe_rtt"`
+	TCPAttempts         uint64          `json:"tcp_attempts"`
+	TCPWins             uint64          `json:"tcp_wins"`
+	LastTCPWin          time.Time       `json:"last_tcp_win"`
+	LastTCPConnectRTT   time.Duration   `json:"last_tcp_connect_rtt"`
 	ConsecutiveFailures uint32          `json:"consecutive_failures"`
 }
 
@@ -58,6 +62,10 @@ type managedEdge struct {
 
 	state               model.EdgeState
 	probeRTT            time.Duration
+	tcpAttempts         uint64
+	tcpWins             uint64
+	lastTCPWin          time.Time
+	lastTCPConnectRTT   time.Duration
 	consecutiveFailures uint32
 }
 
@@ -96,8 +104,9 @@ type Manager struct {
 }
 
 var (
-	_ egress.Source      = (*Manager)(nil)
-	_ egress.TCPObserver = (*Manager)(nil)
+	_ egress.Source             = (*Manager)(nil)
+	_ egress.TCPAttemptObserver = (*Manager)(nil)
+	_ egress.TCPObserver        = (*Manager)(nil)
 )
 
 // New validates cfg and constructs exactly one egress edge for every configured
@@ -277,6 +286,18 @@ func (manager *Manager) Healthy() []egress.Edge {
 	return edges
 }
 
+// ObserveTCPAttempt records that an edge participated in a TCP race.
+func (manager *Manager) ObserveTCPAttempt(edgeID model.EdgeID) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.closed {
+		return
+	}
+	if entry := manager.byID[edgeID]; entry != nil {
+		entry.tcpAttempts++
+	}
+}
+
 // ObserveTCP records the committed TCP race winner for an exact destination.
 func (manager *Manager) ObserveTCP(destination netip.AddrPort, edgeID model.EdgeID, latency time.Duration) {
 	if !destination.IsValid() || destination.Port() == 0 || latency < 0 {
@@ -289,6 +310,10 @@ func (manager *Manager) ObserveTCP(destination netip.AddrPort, edgeID model.Edge
 	if manager.closed || manager.byID[edgeID] == nil {
 		return
 	}
+	entry := manager.byID[edgeID]
+	entry.tcpWins++
+	entry.lastTCPWin = manager.now()
+	entry.lastTCPConnectRTT = latency
 
 	manager.sequence++
 	if manager.sequence == 0 {
@@ -300,7 +325,7 @@ func (manager *Manager) ObserveTCP(destination netip.AddrPort, edgeID model.Edge
 	}
 	observation := tcpObservation{
 		edgeID:     edgeID,
-		observedAt: manager.now(),
+		observedAt: entry.lastTCPWin,
 		sequence:   manager.sequence,
 	}
 	manager.observations[destination] = observation
@@ -390,6 +415,10 @@ func (manager *Manager) Snapshot() Snapshot {
 			ID:                  entry.id,
 			State:               entry.state,
 			ProbeRTT:            entry.probeRTT,
+			TCPAttempts:         entry.tcpAttempts,
+			TCPWins:             entry.tcpWins,
+			LastTCPWin:          entry.lastTCPWin,
+			LastTCPConnectRTT:   entry.lastTCPConnectRTT,
 			ConsecutiveFailures: entry.consecutiveFailures,
 		}
 		if entry.state == model.EdgeStateHealthy {

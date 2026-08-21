@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -151,13 +152,62 @@ func TestHealthHandlerRequiresOneHealthyEdge(t *testing.T) {
 	}
 }
 
-func TestMetricsHandlerReturnsCurrentSnapshots(t *testing.T) {
+func TestDashboardRendersRouterPanelAndEscapesEdgeNames(t *testing.T) {
+	snapshots := fakeSnapshots{
+		edges: edgepool.Snapshot{
+			Healthy: 1,
+			Edges: []edgepool.EdgeSnapshot{{
+				ID: model.EdgeID("<edge-one>"), State: model.EdgeStateHealthy,
+				ProbeRTT: 12 * time.Millisecond, TCPAttempts: 27, TCPWins: 9,
+				LastTCPWin:        time.Date(2026, time.August, 21, 12, 34, 56, 0, time.UTC),
+				LastTCPConnectRTT: 23 * time.Millisecond, ConsecutiveFailures: 0,
+			}},
+		},
+		tcp: relay.TCPSnapshot{Admissions: 7, Active: 2, Wins: 5, Failures: 1, Denied: 3},
+		udp: relay.UDPSnapshot{Mappings: 4, Expired: 6, Dropped: 2, Denied: 8},
+	}
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	response := httptest.NewRecorder()
+	newControlHandler(snapshots).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", contentType)
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		"PROXYGEN", "WireGuard Edge Router Management", "&lt;edge-one&gt;",
+		"12ms", "27 / 9", "23ms", "TCP Connection Racing", "UDP NAT Table", "refresh 5s",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard body is missing %q", want)
+		}
+	}
+	if strings.Contains(body, "<edge-one>") {
+		t.Fatal("dashboard rendered an unescaped edge ID")
+	}
+	if response.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("dashboard omitted Content-Security-Policy")
+	}
+}
+
+func TestDashboardRootRedirectsToMetrics(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+	newControlHandler(fakeSnapshots{}).ServeHTTP(response, request)
+	if response.Code != http.StatusTemporaryRedirect || response.Header().Get("Location") != "/metrics" {
+		t.Fatalf("root response = %d location %q", response.Code, response.Header().Get("Location"))
+	}
+}
+
+func TestMetricsAPIHandlerReturnsCurrentSnapshots(t *testing.T) {
 	snapshots := fakeSnapshots{
 		edges: edgepool.Snapshot{Healthy: 3},
 		tcp:   relay.TCPSnapshot{Admissions: 7, Active: 2, Wins: 5, Failures: 1},
 		udp:   relay.UDPSnapshot{Mappings: 4, Expired: 6, Dropped: 2},
 	}
-	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/metrics", nil)
 	response := httptest.NewRecorder()
 	newControlHandler(snapshots).ServeHTTP(response, request)
 	if response.Code != http.StatusOK {

@@ -209,13 +209,13 @@ func TestValidateAcceptsOptionalControlFields(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsNonLoopbackMetricsListener(t *testing.T) {
-	cfg := validConfig()
-	cfg.MetricsListen = "0.0.0.0:9090"
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "metrics_listen must use a loopback IP address") {
-		t.Fatalf("Validate() error = %v, want loopback-only metrics error", err)
+func TestValidateAcceptsNonLoopbackMetricsListener(t *testing.T) {
+	for _, endpoint := range []string{"0.0.0.0:9090", "192.0.2.10:9090", "[::]:9090"} {
+		cfg := validConfig()
+		cfg.MetricsListen = endpoint
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() rejected metrics listener %q: %v", endpoint, err)
+		}
 	}
 }
 

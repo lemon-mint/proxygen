@@ -343,6 +343,7 @@ func TestTCPWinnerObservationIsCommittedOnce(t *testing.T) {
 			},
 		}},
 		observations: make(chan tcpObservation, 2),
+		attempts:     make(chan model.EdgeID, 2),
 	}
 	relay := newTestTCP(t, source)
 	defer relay.Close()
@@ -352,6 +353,19 @@ func TestTCPWinnerObservationIsCommittedOnce(t *testing.T) {
 		t.Fatal("race returned no winner")
 	}
 	defer conn.Close()
+
+	attempted := map[model.EdgeID]bool{}
+	for range 2 {
+		select {
+		case edgeID := <-source.attempts:
+			attempted[edgeID] = true
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for TCP race attempt observation")
+		}
+	}
+	if !attempted["winner"] || !attempted["loser"] {
+		t.Fatalf("attempted edges = %v, want winner and loser", attempted)
+	}
 
 	select {
 	case observation := <-source.observations:
@@ -668,7 +682,12 @@ type tcpObservation struct {
 
 type observingTCPSource struct {
 	fakeSource
+	attempts     chan model.EdgeID
 	observations chan tcpObservation
+}
+
+func (source *observingTCPSource) ObserveTCPAttempt(edgeID model.EdgeID) {
+	source.attempts <- edgeID
 }
 
 func (source *observingTCPSource) ObserveTCP(

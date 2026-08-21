@@ -199,14 +199,17 @@ Failure at step 4 means the edge SNAT does not provide literal address-and-port-
 
 ## Health and metrics
 
-When `metrics_listen` is configured, it must use `127.0.0.0/8` or `::1`. Host-local processes can access it; WireGuard clients cannot reach it through the userspace data plane because the listener is outside gVisor and the built-in destination ACL rejects loopback.
+`metrics_listen` accepts any numeric bind address, including `0.0.0.0` and `::`.
 
+- `GET /metrics` serves the read-only router-style management dashboard and refreshes every five seconds.
+- `GET /api/metrics` returns the underlying JSON edge, TCP race/ACL, and UDP NAT/ACL counters.
 - `GET /healthz` returns HTTP 200 when at least one edge is healthy; otherwise 503.
-- `GET /metrics` returns JSON edge states, probe RTT/failure counts, TCP race/ACL counters, and UDP mapping/ACL counters.
 
-For remote collection, keep the listener on loopback and use an authenticated host-side reverse proxy or SSH tunnel.
+The dashboard has no authentication. A non-loopback bind must be protected with host firewall rules or an authenticated reverse proxy.
 
 Edge health is based on TCP probes sent through each independent egress Netstack. Configuring or bringing up a WireGuard device alone does not mark it healthy.
+
+Repeated public-IP checks commonly select the same edge by design: every new TCP flow races all healthy edges, and the first completed handshake wins rather than round-robin balancing. The same destination and stable network usually produce the same winner, while browsers may also reuse one existing HTTP connection. In the dashboard, `Attempts / Wins` distinguishes the cases: attempts increasing on every healthy edge with wins concentrated on one edge means that edge is consistently fastest; attempts increasing on only one edge means the other edges are not healthy and were excluded from the race.
 
 ## Protocol support
 

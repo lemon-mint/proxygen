@@ -58,6 +58,7 @@ type tcpStats struct {
 // TCP owns the bounded workers that race and relay ingress TCP connections.
 type TCP struct {
 	source           egress.Source
+	attemptObserver  egress.TCPAttemptObserver
 	observer         egress.TCPObserver
 	connectTimeout   time.Duration
 	idleTimeout      time.Duration
@@ -145,11 +146,13 @@ func NewTCP(source egress.Source, cfg TCPConfig) (*TCP, error) {
 		return nil, fmt.Errorf("TCP relay pending-request abort callback is required")
 	}
 	observer, _ := source.(egress.TCPObserver)
+	attemptObserver, _ := source.(egress.TCPAttemptObserver)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	capacity := cfg.Workers + cfg.QueueDepth
 	relay := &TCP{
 		source:           source,
+		attemptObserver:  attemptObserver,
 		connectTimeout:   cfg.ConnectTimeout,
 		idleTimeout:      cfg.IdleTimeout,
 		allowDestination: cfg.AllowDestination,
@@ -290,6 +293,9 @@ func (r *TCP) race(destination netip.AddrPort) net.Conn {
 	for _, edge := range edges {
 		go func(edge egress.Edge) {
 			defer attempts.Done()
+			if r.attemptObserver != nil {
+				r.attemptObserver.ObserveTCPAttempt(edge.ID())
+			}
 			started := time.Now()
 			conn, err := edge.DialTCP(ctx, destination)
 			latency := time.Since(started)

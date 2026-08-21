@@ -364,14 +364,8 @@ func validateMetricsListen(path, endpoint string) error {
 	if endpoint == "" {
 		return nil
 	}
-	address, err := parseEndpoint(path, endpoint)
-	if err != nil {
-		return err
-	}
-	if !address.Addr().Unmap().IsLoopback() {
-		return fmt.Errorf("%s must use a loopback IP address", path)
-	}
-	return nil
+	_, err := parseEndpoint(path, endpoint)
+	return err
 }
 
 func parseEndpoint(path, endpoint string) (netip.AddrPort, error) {

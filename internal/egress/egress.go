@@ -19,6 +19,11 @@ type Edge interface {
 	Close() error
 }
 
+// TCPAttemptObserver optionally receives every edge selected for a TCP race.
+type TCPAttemptObserver interface {
+	ObserveTCPAttempt(edgeID model.EdgeID)
+}
+
 // TCPObserver optionally receives the winning edge and monotonic dial latency
 // for a committed TCP race.
 type TCPObserver interface {

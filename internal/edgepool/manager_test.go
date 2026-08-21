@@ -135,7 +135,12 @@ func TestSelectUDPPrioritizesExactRecentTCPWinner(t *testing.T) {
 	setHealthy(manager, 2*time.Millisecond, 8*time.Millisecond, 12*time.Millisecond)
 
 	key := udpKey("10.0.0.2:2000", "203.0.113.8:443")
+	manager.ObserveTCPAttempt(edges[2].id)
 	manager.ObserveTCP(netip.MustParseAddrPort("203.0.113.8:443"), edges[2].id, 20*time.Millisecond)
+	snapshot := manager.Snapshot().Edges[2]
+	if snapshot.TCPAttempts != 1 || snapshot.TCPWins != 1 || snapshot.LastTCPConnectRTT != 20*time.Millisecond || snapshot.LastTCPWin.IsZero() {
+		t.Fatalf("winner metrics = %+v, want one 20ms TCP win", snapshot)
+	}
 	selected, err := manager.SelectUDP(key)
 	if err != nil {
 		t.Fatalf("SelectUDP exact observation: %v", err)
