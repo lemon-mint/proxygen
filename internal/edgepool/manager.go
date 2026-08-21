@@ -54,6 +54,7 @@ type managedEdge struct {
 	edge        egress.Edge
 	healthCheck netip.AddrPort
 	location    model.GeoPoint
+	hasLocation bool
 
 	state               model.EdgeState
 	probeRTT            time.Duration
@@ -156,15 +157,27 @@ func New(cfg config.Config, locate LocateFunc, factory Factory) (*Manager, error
 			)
 		}
 
+		location := model.GeoPoint{
+			Latitude:  edgeConfig.Geo.Latitude,
+			Longitude: edgeConfig.Geo.Longitude,
+		}
+		hasLocation := edgeConfig.Geo.CountryCode != "ZZ" && validGeoPoint(location)
+		if edgeConfig.Geo.CountryCode == "ZZ" && locate != nil {
+			if endpoint, endpointErr := netip.ParseAddrPort(edgeConfig.Endpoint); endpointErr == nil {
+				if derived, found := locate(endpoint.Addr().Unmap()); found && validGeoPoint(derived) {
+					location = derived
+					hasLocation = true
+				}
+			}
+		}
+
 		entry := &managedEdge{
 			id:          edgeConfig.ID,
 			edge:        edge,
 			healthCheck: netip.AddrPortFrom(healthCheck.Addr().Unmap(), healthCheck.Port()),
-			location: model.GeoPoint{
-				Latitude:  edgeConfig.Geo.Latitude,
-				Longitude: edgeConfig.Geo.Longitude,
-			},
-			state: model.EdgeStateStarting,
+			location:    location,
+			hasLocation: hasLocation,
+			state:       model.EdgeStateStarting,
 		}
 		manager.edges = append(manager.edges, entry)
 		manager.byID[edgeConfig.ID] = entry
@@ -335,7 +348,7 @@ func (manager *Manager) SelectUDP(key model.FlowKey) (egress.Edge, error) {
 			continue
 		}
 		score := float64(entry.probeRTT)
-		if hasLocation && validGeoPoint(entry.location) {
+		if hasLocation && entry.hasLocation {
 			distance := geoDistanceKilometers(destinationLocation, entry.location)
 			score += distance * float64(2*time.Second) / fiberKilometersPerSecond
 		}

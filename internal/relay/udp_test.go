@@ -16,17 +16,51 @@ import (
 )
 
 func TestUDPRejectsFlowLimitAboveMemoryBound(t *testing.T) {
-	relay, err := NewUDP(newFakeUDPSource(newFakeUDPEdge()), time.Minute, model.MaxUDPFlows+1)
+	relay, err := NewUDP(newFakeUDPSource(newFakeUDPEdge()), time.Minute, model.MaxUDPFlows+1, allowAllTestDestinations)
 	if err == nil {
 		_ = relay.Close()
 		t.Fatal("NewUDP() accepted a flow limit above the relay memory bound")
+	}
+}
+func TestUDPRequiresDestinationPolicy(t *testing.T) {
+	relay, err := NewUDP(newFakeUDPSource(newFakeUDPEdge()), time.Minute, 1, nil)
+	if err == nil {
+		_ = relay.Close()
+		t.Fatal("NewUDP() accepted a nil destination policy")
+	}
+}
+
+func TestUDPDestinationPolicyRejectsBeforeEndpointCreation(t *testing.T) {
+	relay, err := NewUDP(
+		newFakeUDPSource(newFakeUDPEdge()),
+		time.Minute,
+		1,
+		func(model.FlowKey) bool { return false },
+	)
+	if err != nil {
+		t.Fatalf("NewUDP: %v", err)
+	}
+	defer relay.Close()
+
+	opened := false
+	if relay.admit(testUDPKey("10.0.0.8:31000", "8.8.8.8:53"), func() (net.Conn, bool) {
+		opened = true
+		return newFakeDatagramConn(), true
+	}) {
+		t.Fatal("ACL-denied UDP mapping was admitted")
+	}
+	if opened {
+		t.Fatal("ACL denial opened the ingress endpoint")
+	}
+	if snapshot := relay.Snapshot(); snapshot.Denied != 1 || snapshot.Mappings != 0 {
+		t.Fatalf("snapshot = %+v, want one denial and no mapping", snapshot)
 	}
 }
 
 func TestUDPLiteralDestinationsCreateDistinctMappings(t *testing.T) {
 	edge := newFakeUDPEdge()
 	source := newFakeUDPSource(edge)
-	relay, err := NewUDP(source, time.Minute, 4)
+	relay, err := NewUDP(source, time.Minute, 4, allowAllTestDestinations)
 	if err != nil {
 		t.Fatalf("NewUDP: %v", err)
 	}
@@ -81,7 +115,7 @@ func TestUDPLiteralDestinationsCreateDistinctMappings(t *testing.T) {
 func TestUDPIdleExpiryReleasesBothSockets(t *testing.T) {
 	edge := newFakeUDPEdge()
 	source := newFakeUDPSource(edge)
-	relay, err := NewUDP(source, 25*time.Millisecond, 1)
+	relay, err := NewUDP(source, 25*time.Millisecond, 1, allowAllTestDestinations)
 	if err != nil {
 		t.Fatalf("NewUDP: %v", err)
 	}
@@ -112,7 +146,7 @@ func TestUDPIdleExpiryReleasesBothSockets(t *testing.T) {
 func TestUDPMaxFlowAdmissionAndShutdown(t *testing.T) {
 	edge := newFakeUDPEdge()
 	source := newFakeUDPSource(edge)
-	relay, err := NewUDP(source, time.Minute, 1)
+	relay, err := NewUDP(source, time.Minute, 1, allowAllTestDestinations)
 	if err != nil {
 		t.Fatalf("NewUDP: %v", err)
 	}
@@ -169,7 +203,7 @@ func TestUDPMaxFlowAdmissionAndShutdown(t *testing.T) {
 
 func TestUDPSetupFailureDropsMapping(t *testing.T) {
 	source := newFakeUDPSource(nil)
-	relay, err := NewUDP(source, time.Minute, 1)
+	relay, err := NewUDP(source, time.Minute, 1, allowAllTestDestinations)
 	if err != nil {
 		t.Fatalf("NewUDP: %v", err)
 	}

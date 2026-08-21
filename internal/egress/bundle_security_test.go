@@ -26,6 +26,12 @@ func TestEdgeUAPIRejectsAllZeroKeysWithoutEmittingConfiguration(t *testing.T) {
 				cfg.PeerPublicKey = zeroKey
 			},
 		},
+		{
+			name: "preshared key",
+			change: func(cfg *config.EdgeConfig) {
+				cfg.PresharedKey = zeroKey
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -75,6 +81,13 @@ func TestEdgeUAPIRejectsNonCanonicalKeysWithoutEmittingConfiguration(t *testing.
 					path: "edge.peer_public_key",
 					change: func(cfg *config.EdgeConfig) {
 						cfg.PeerPublicKey = injected
+					},
+				},
+				{
+					name: "preshared key",
+					path: "edge.preshared_key",
+					change: func(cfg *config.EdgeConfig) {
+						cfg.PresharedKey = injected
 					},
 				},
 			} {

@@ -38,6 +38,7 @@ func TestRunStartsHealthAndClosesRuntimeInOrder(t *testing.T) {
 	wireGuard := &fakeCloser{name: "wireguard", events: events}
 
 	var tcpConfig relay.TCPConfig
+	var udpPolicy relay.DestinationPolicy
 	deps := fakeDependencies()
 	deps.openGeo = func(string) (geoDatabase, error) { return geoDB, nil }
 	deps.newEdgePool = func(config.Config, edgepool.LocateFunc) (edgeRuntime, error) { return edges, nil }
@@ -46,7 +47,10 @@ func TestRunStartsHealthAndClosesRuntimeInOrder(t *testing.T) {
 		tcpRelay.abortPending = relayConfig.AbortPending
 		return tcpRelay, nil
 	}
-	deps.newUDP = func(egress.Source, time.Duration, int) (udpRuntime, error) { return udpRelay, nil }
+	deps.newUDP = func(_ egress.Source, _ time.Duration, _ int, policy relay.DestinationPolicy) (udpRuntime, error) {
+		udpPolicy = policy
+		return udpRelay, nil
+	}
 	deps.newNetstack = func(int, int, netstack.Handlers) (ingressRuntime, error) { return ingress, nil }
 	deps.newWireGuard = func(config.IngressConfig, ingressRuntime) (io.Closer, error) { return wireGuard, nil }
 
@@ -56,6 +60,23 @@ func TestRunStartsHealthAndClosesRuntimeInOrder(t *testing.T) {
 	}
 	if tcpConfig.IdleTimeout != 37*time.Second {
 		t.Fatalf("TCP idle timeout = %v, want 37s", tcpConfig.IdleTimeout)
+	}
+	for _, protocol := range []model.TransportProtocol{model.ProtocolTCP, model.ProtocolUDP} {
+		key, keyErr := model.NewFlowKey(
+			protocol,
+			netip.MustParseAddrPort("10.77.0.2:40000"),
+			netip.MustParseAddrPort("127.0.0.1:9090"),
+		)
+		if keyErr != nil {
+			t.Fatalf("NewFlowKey: %v", keyErr)
+		}
+		policy := tcpConfig.AllowDestination
+		if protocol == model.ProtocolUDP {
+			policy = udpPolicy
+		}
+		if policy == nil || policy(key) {
+			t.Fatalf("runtime policy allowed loopback destination for protocol %d", protocol)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -85,7 +106,7 @@ func TestMetricsListenFailureUnwindsReverseConstructionOrder(t *testing.T) {
 		tcpRelay.abortPending = relayConfig.AbortPending
 		return tcpRelay, nil
 	}
-	deps.newUDP = func(egress.Source, time.Duration, int) (udpRuntime, error) {
+	deps.newUDP = func(egress.Source, time.Duration, int, relay.DestinationPolicy) (udpRuntime, error) {
 		return &fakeUDP{events: events}, nil
 	}
 	deps.newNetstack = func(int, int, netstack.Handlers) (ingressRuntime, error) { return ingress, nil }
@@ -256,7 +277,7 @@ func fakeDependencies() dependencies {
 		newTCP: func(egress.Source, relay.TCPConfig) (tcpRuntime, error) {
 			return nil, errors.New("unexpected TCP construction")
 		},
-		newUDP: func(egress.Source, time.Duration, int) (udpRuntime, error) {
+		newUDP: func(egress.Source, time.Duration, int, relay.DestinationPolicy) (udpRuntime, error) {
 			return nil, errors.New("unexpected UDP construction")
 		},
 		newNetstack: func(int, int, netstack.Handlers) (ingressRuntime, error) {

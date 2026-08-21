@@ -73,6 +73,7 @@ func TestIngressTCPForwarderRacesRealRelayWithoutLoserPayload(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		IdleTimeout:      time.Minute,
 		RelayBufferBytes: 1024,
+		AllowDestination: func(model.FlowKey) bool { return true },
 		AbortPending: func() {
 			if ingress != nil {
 				_ = ingress.Close()
@@ -82,7 +83,7 @@ func TestIngressTCPForwarderRacesRealRelayWithoutLoserPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTCP: %v", err)
 	}
-	udpRelay, err := relay.NewUDP(source, time.Minute, 8)
+	udpRelay, err := relay.NewUDP(source, time.Minute, 8, func(model.FlowKey) bool { return true })
 	if err != nil {
 		tcpRelay.Close()
 		t.Fatalf("NewUDP: %v", err)

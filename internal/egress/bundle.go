@@ -183,11 +183,24 @@ func edgeUAPI(cfg config.EdgeConfig) (string, error) {
 	if err != nil {
 		return "", errors.New("edge.peer_public_key must be a base64-encoded 32-byte key")
 	}
+	var presharedKey string
+	if cfg.PresharedKey != "" {
+		presharedKey, err = keyToHex(cfg.PresharedKey)
+		if err != nil {
+			return "", errors.New("edge.preshared_key must be a base64-encoded 32-byte key")
+		}
+	}
 
 	var configuration strings.Builder
 	fmt.Fprintf(&configuration, "private_key=%s\n", privateKey)
+	if cfg.ListenPort != 0 {
+		fmt.Fprintf(&configuration, "listen_port=%d\n", cfg.ListenPort)
+	}
 	configuration.WriteString("replace_peers=true\n")
 	fmt.Fprintf(&configuration, "public_key=%s\n", publicKey)
+	if presharedKey != "" {
+		fmt.Fprintf(&configuration, "preshared_key=%s\n", presharedKey)
+	}
 	fmt.Fprintf(&configuration, "endpoint=%s\n", cfg.Endpoint)
 	fmt.Fprintf(&configuration, "persistent_keepalive_interval=%d\n", int64(cfg.PersistentKeepalive.Std().Seconds()))
 	configuration.WriteString("replace_allowed_ips=true\n")

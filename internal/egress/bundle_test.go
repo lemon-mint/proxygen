@@ -21,6 +21,8 @@ import (
 
 func TestEdgeUAPIConvertsKeysAndIncludesRoutes(t *testing.T) {
 	cfg := validEdgeConfig()
+	cfg.ListenPort = 42001
+	cfg.PresharedKey = testKey(3)
 
 	configuration, err := edgeUAPI(cfg)
 	if err != nil {
@@ -28,9 +30,12 @@ func TestEdgeUAPIConvertsKeysAndIncludesRoutes(t *testing.T) {
 	}
 	privateHex := hex.EncodeToString(bytesOf(1))
 	publicHex := hex.EncodeToString(bytesOf(2))
+	presharedHex := hex.EncodeToString(bytesOf(3))
 	want := "private_key=" + privateHex + "\n" +
+		"listen_port=42001\n" +
 		"replace_peers=true\n" +
 		"public_key=" + publicHex + "\n" +
+		"preshared_key=" + presharedHex + "\n" +
 		"endpoint=[2001:db8::10]:51820\n" +
 		"persistent_keepalive_interval=25\n" +
 		"replace_allowed_ips=true\n" +

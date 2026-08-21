@@ -28,6 +28,16 @@ func (cfg Config) Validate() error {
 	}
 	add(validateControlBytes("geo_database", cfg.GeoDatabase))
 	add(validateMetricsListen("metrics_listen", cfg.MetricsListen))
+	add(validateControlBytes("wireguard_directory", cfg.WireGuardDirectory))
+	if cfg.WireGuardDirectory != "" {
+		add(fmt.Errorf("wireguard_directory must be expanded by config.Load"))
+	}
+	if cfg.WireGuardHealthCheckAddress != "" {
+		add(fmt.Errorf("wireguard_health_check_address must be consumed by config.Load"))
+	}
+	if cfg.DestinationACL != nil {
+		add(cfg.DestinationACL.validate())
+	}
 	add(cfg.Ingress.validate())
 	if len(cfg.Edges) < 3 || len(cfg.Edges) > 4 {
 		add(fmt.Errorf("edges must contain 3 or 4 entries; got %d", len(cfg.Edges)))
@@ -160,8 +170,14 @@ func (edge EdgeConfig) validate(path string) error {
 		add(fmt.Errorf("%s.id: %w", path, err))
 	}
 	add(validateKey(path+".private_key", edge.PrivateKey))
+	if edge.ListenPort < 0 || edge.ListenPort > 65535 {
+		add(fmt.Errorf("%s.listen_port must be between 0 and 65535", path))
+	}
 	add(validateOverlayPrefix(path+".overlay_address", edge.OverlayAddress))
 	add(validateKey(path+".peer_public_key", edge.PeerPublicKey))
+	if edge.PresharedKey != "" {
+		add(validateKey(path+".preshared_key", edge.PresharedKey))
+	}
 	add(validateEndpoint(path+".endpoint", edge.Endpoint))
 	add(validateHealthCheckAddress(path+".health_check_address", edge.HealthCheckAddress, path+".overlay_address", edge.OverlayAddress))
 	healthCheck, healthCheckErr := netip.ParseAddrPort(edge.HealthCheckAddress)
@@ -213,6 +229,39 @@ func (edge EdgeConfig) validate(path string) error {
 		add(fmt.Errorf("%s.persistent_keepalive must be zero or a whole number of seconds no greater than 65535s", path))
 	}
 	add(edge.Geo.validate(path + ".geo"))
+	return errors.Join(problems...)
+}
+
+// Validate checks an ordered destination ACL independently.
+func (acl DestinationACLConfig) Validate() error {
+	return acl.validate()
+}
+
+func (acl DestinationACLConfig) validate() error {
+	var problems []error
+	if acl.DefaultAction != "allow" && acl.DefaultAction != "deny" {
+		problems = append(problems, fmt.Errorf("destination_acl.default_action must be allow or deny"))
+	}
+	for index, rule := range acl.Rules {
+		path := fmt.Sprintf("destination_acl.rules[%d]", index)
+		if rule.Action != "allow" && rule.Action != "deny" {
+			problems = append(problems, fmt.Errorf("%s.action must be allow or deny", path))
+		}
+		if rule.Protocol != "any" && rule.Protocol != "tcp" && rule.Protocol != "udp" {
+			problems = append(problems, fmt.Errorf("%s.protocol must be any, tcp, or udp", path))
+		}
+		if !rule.Prefix.IsValid() {
+			problems = append(problems, fmt.Errorf("%s.prefix is required", path))
+		} else if rule.Prefix != rule.Prefix.Masked() {
+			problems = append(problems, fmt.Errorf("%s.prefix must be a canonical network prefix", path))
+		}
+		for portIndex, portRange := range rule.Ports {
+			portPath := fmt.Sprintf("%s.ports[%d]", path, portIndex)
+			if portRange.From == 0 || portRange.To == 0 || portRange.From > portRange.To {
+				problems = append(problems, fmt.Errorf("%s must contain a non-zero inclusive range with from <= to", portPath))
+			}
+		}
+	}
 	return errors.Join(problems...)
 }
 
@@ -303,8 +352,14 @@ func validateMetricsListen(path, endpoint string) error {
 	if endpoint == "" {
 		return nil
 	}
-	_, err := parseEndpoint(path, endpoint)
-	return err
+	address, err := parseEndpoint(path, endpoint)
+	if err != nil {
+		return err
+	}
+	if !address.Addr().Unmap().IsLoopback() {
+		return fmt.Errorf("%s must use a loopback IP address", path)
+	}
+	return nil
 }
 
 func parseEndpoint(path, endpoint string) (netip.AddrPort, error) {

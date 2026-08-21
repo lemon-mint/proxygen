@@ -56,11 +56,51 @@ func TestTCPRequestFailurePathsCompleteOnce(t *testing.T) {
 	})
 }
 
+func TestTCPDestinationPolicyRejectsBeforeEndpointCreation(t *testing.T) {
+	relay, err := NewTCP(fakeSource{}, TCPConfig{
+		Workers:          1,
+		ConnectTimeout:   time.Second,
+		IdleTimeout:      time.Second,
+		RelayBufferBytes: 1024,
+		AllowDestination: func(model.FlowKey) bool { return false },
+		AbortPending:     func() {},
+	})
+	if err != nil {
+		t.Fatalf("NewTCP: %v", err)
+	}
+	defer relay.Close()
+
+	req := &fakeRequest{id: validTCPID(), createOK: true}
+	relay.handle(req)
+	req.assertCompletion(t, true)
+	if req.creates != 0 {
+		t.Fatalf("CreateConn calls = %d, want 0 for ACL denial", req.creates)
+	}
+	if snapshot := relay.Snapshot(); snapshot.Denied != 1 || snapshot.Admissions != 0 {
+		t.Fatalf("snapshot = %+v, want one denial and no admission", snapshot)
+	}
+}
+
+func TestTCPRequiresDestinationPolicy(t *testing.T) {
+	relay, err := NewTCP(fakeSource{}, TCPConfig{
+		Workers:          1,
+		ConnectTimeout:   time.Second,
+		IdleTimeout:      time.Second,
+		RelayBufferBytes: 1024,
+		AbortPending:     func() {},
+	})
+	if err == nil {
+		relay.Close()
+		t.Fatal("NewTCP accepted a nil destination policy")
+	}
+}
+
 func TestTCPRequiresPositiveIdleTimeout(t *testing.T) {
 	relay, err := NewTCP(fakeSource{}, TCPConfig{
 		Workers:          1,
 		ConnectTimeout:   time.Second,
 		RelayBufferBytes: 1024,
+		AllowDestination: allowAllTestDestinations,
 		AbortPending:     func() {},
 	})
 	if err == nil {
@@ -75,6 +115,7 @@ func TestTCPRequiresAbortPending(t *testing.T) {
 		ConnectTimeout:   time.Second,
 		IdleTimeout:      time.Second,
 		RelayBufferBytes: 1024,
+		AllowDestination: allowAllTestDestinations,
 	})
 	if err == nil {
 		relay.abortPending = func() {}
@@ -93,6 +134,7 @@ func TestTCPCloseAbortsPendingCreateConn(t *testing.T) {
 		ConnectTimeout:   time.Second,
 		IdleTimeout:      time.Second,
 		RelayBufferBytes: 1024,
+		AllowDestination: allowAllTestDestinations,
 		AbortPending: func() {
 			abortCalls.Add(1)
 			close(aborted)
@@ -397,6 +439,7 @@ func TestTCPInitialIdleDeadlineClosesFlowAndReleasesWorker(t *testing.T) {
 		ConnectTimeout:   time.Second,
 		IdleTimeout:      idleTimeout,
 		RelayBufferBytes: 1024,
+		AllowDestination: allowAllTestDestinations,
 		AbortPending:     func() {},
 	})
 	if err != nil {
@@ -505,6 +548,7 @@ func newTestTCP(t *testing.T, source egress.Source) *TCP {
 		ConnectTimeout:   time.Second,
 		IdleTimeout:      time.Second,
 		RelayBufferBytes: 1024,
+		AllowDestination: allowAllTestDestinations,
 		AbortPending:     func() {},
 	})
 	if err != nil {
@@ -512,6 +556,8 @@ func newTestTCP(t *testing.T, source egress.Source) *TCP {
 	}
 	return relay
 }
+
+var allowAllTestDestinations DestinationPolicy = func(model.FlowKey) bool { return true }
 
 func validTCPID() stack.TransportEndpointID {
 	return stack.TransportEndpointID{

@@ -93,6 +93,68 @@ A configuration is single-stack: ingress, every egress overlay, every health tar
 
 The current UDP relay holds two maximum-size datagram buffers per active mapping. `max_udp_flows` therefore defaults to 1024 and is capped at 4096; increasing scale beyond that requires replacing the goroutine-per-direction relay with a readiness-driven multiplexer.
 
+### Client destination ACL
+
+When `destination_acl` is omitted, proxygen installs an Internet-exit policy that denies loopback, private/ULA, link-local, CGNAT, multicast, benchmark, documentation, and reserved address ranges. TCP is rejected before the ingress endpoint is created; UDP is rejected before a mapping or egress source port is allocated.
+
+Custom policies use ordered first-match rules:
+
+```json
+{
+  "destination_acl": {
+    "default_action": "deny",
+    "rules": [
+      {
+        "action": "allow",
+        "protocol": "tcp",
+        "prefix": "0.0.0.0/0",
+        "ports": [{"from": 80, "to": 80}, {"from": 443, "to": 443}]
+      },
+      {
+        "action": "allow",
+        "protocol": "udp",
+        "prefix": "0.0.0.0/0",
+        "ports": [{"from": 53, "to": 53}, {"from": 443, "to": 443}]
+      }
+    ]
+  }
+}
+```
+
+`protocol` is `any`, `tcp`, or `udp`. An empty `ports` list matches every non-zero destination port. Rule order is authoritative; place narrow exceptions before broad rules.
+
+### WireGuard directory import
+
+Egress edges may be provided as inline JSON, `.conf` files, or a mixture. The merged total must be three or four.
+
+```json
+{
+  "wireguard_directory": "/etc/wireguard/proxygen.d",
+  "wireguard_health_check_address": "1.1.1.1:443",
+  "edges": []
+}
+```
+
+At startup, proxygen reads regular `*.conf` files in lexical filename order. The filename without `.conf` becomes the edge ID. Directory changes take effect after a process restart.
+
+```ini
+[Interface]
+PrivateKey = BASE64_PRIVATE_KEY
+Address = 10.88.1.2/24
+ListenPort = 42001
+
+[Peer]
+PublicKey = BASE64_EDGE_PUBLIC_KEY
+PresharedKey = OPTIONAL_BASE64_PRESHARED_KEY
+Endpoint = 192.0.2.10:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+```
+
+Exactly one `Interface` address and one `Peer` are supported per file. `Endpoint` must be numeric. `DNS`, `MTU`, `Table`, `FwMark`, `SaveConfig`, and wg-quick shell-hook keys are not applied; shell hooks are never executed. The JSON-level MTU and userspace routing remain authoritative.
+
+All imported edges use `wireguard_health_check_address`. With `geo_database`, an imported edge location is derived from its endpoint IP; otherwise selection falls back to measured probe RTT and TCP winner history.
+
 Validate without opening sockets:
 
 ```sh
@@ -131,10 +193,12 @@ Failure at step 4 means the edge SNAT does not provide literal address-and-port-
 
 ## Health and metrics
 
-When `metrics_listen` is configured:
+When `metrics_listen` is configured, it must use `127.0.0.0/8` or `::1`. Host-local processes can access it; WireGuard clients cannot reach it through the userspace data plane because the listener is outside gVisor and the built-in destination ACL rejects loopback.
 
 - `GET /healthz` returns HTTP 200 only when at least three edges are healthy; otherwise 503.
-- `GET /metrics` returns JSON edge states, probe RTT/failure counts, TCP race counters, and UDP mapping counters.
+- `GET /metrics` returns JSON edge states, probe RTT/failure counts, TCP race/ACL counters, and UDP mapping/ACL counters.
+
+For remote collection, keep the listener on loopback and use an authenticated host-side reverse proxy or SSH tunnel.
 
 Edge health is based on TCP probes sent through each independent egress Netstack. Configuring or bringing up a WireGuard device alone does not mark it healthy.
 

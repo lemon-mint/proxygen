@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/acl"
 	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/config"
 	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/edgepool"
 	"git.sepolia.gosuda.org/lemon-mint/proxygen/internal/egress"
@@ -62,7 +63,7 @@ type dependencies struct {
 	openGeo      func(string) (geoDatabase, error)
 	newEdgePool  func(config.Config, edgepool.LocateFunc) (edgeRuntime, error)
 	newTCP       func(egress.Source, relay.TCPConfig) (tcpRuntime, error)
-	newUDP       func(egress.Source, time.Duration, int) (udpRuntime, error)
+	newUDP       func(egress.Source, time.Duration, int, relay.DestinationPolicy) (udpRuntime, error)
 	newNetstack  func(int, int, netstack.Handlers) (ingressRuntime, error)
 	newWireGuard func(config.IngressConfig, ingressRuntime) (io.Closer, error)
 	listen       func(string, string) (net.Listener, error)
@@ -78,8 +79,8 @@ var defaultDependencies = dependencies{
 	newTCP: func(source egress.Source, cfg relay.TCPConfig) (tcpRuntime, error) {
 		return relay.NewTCP(source, cfg)
 	},
-	newUDP: func(source egress.Source, idleTimeout time.Duration, maxFlows int) (udpRuntime, error) {
-		return relay.NewUDP(source, idleTimeout, maxFlows)
+	newUDP: func(source egress.Source, idleTimeout time.Duration, maxFlows int, allowDestination relay.DestinationPolicy) (udpRuntime, error) {
+		return relay.NewUDP(source, idleTimeout, maxFlows, allowDestination)
 	},
 	newNetstack: func(mtu, maxTCPInFlight int, handlers netstack.Handlers) (ingressRuntime, error) {
 		return netstack.NewIngress(mtu, maxTCPInFlight, handlers)
@@ -145,6 +146,10 @@ func newApp(cfg config.Config, deps dependencies) (_ *App, resultErr error) {
 		shutdownTimeout: cfg.Timeouts.Shutdown.Std(),
 		closing:         make(chan struct{}),
 	}
+	destinationPolicy, err := acl.New(cfg.DestinationACL)
+	if err != nil {
+		return nil, err
+	}
 
 	var locate edgepool.LocateFunc
 	if cfg.GeoDatabase != "" {
@@ -181,6 +186,7 @@ func newApp(cfg config.Config, deps dependencies) (_ *App, resultErr error) {
 		ConnectTimeout:   cfg.Timeouts.TCPConnect.Std(),
 		IdleTimeout:      cfg.Timeouts.TCPIdle.Std(),
 		RelayBufferBytes: cfg.Limits.RelayBufferBytes,
+		AllowDestination: destinationPolicy.Allow,
 		AbortPending: func() {
 			if ingress != nil {
 				_ = ingress.Close()
@@ -199,7 +205,7 @@ func newApp(cfg config.Config, deps dependencies) (_ *App, resultErr error) {
 		return nil
 	})
 
-	udpRelay, err := deps.newUDP(edges, cfg.Timeouts.UDPIdle.Std(), cfg.Limits.MaxUDPFlows)
+	udpRelay, err := deps.newUDP(edges, cfg.Timeouts.UDPIdle.Std(), cfg.Limits.MaxUDPFlows, destinationPolicy.Allow)
 	if err != nil {
 		return nil, fmt.Errorf("construct UDP relay: %w", err)
 	}

@@ -55,13 +55,16 @@ func (duration *Duration) UnmarshalJSON(data []byte) error {
 
 // Config is the complete proxygen configuration.
 type Config struct {
-	MTU           int           `json:"mtu"`
-	GeoDatabase   string        `json:"geo_database"`
-	MetricsListen string        `json:"metrics_listen"`
-	Ingress       IngressConfig `json:"ingress"`
-	Edges         []EdgeConfig  `json:"edges"`
-	Timeouts      TimeoutConfig `json:"timeouts"`
-	Limits        LimitsConfig  `json:"limits"`
+	MTU                         int                   `json:"mtu"`
+	GeoDatabase                 string                `json:"geo_database"`
+	MetricsListen               string                `json:"metrics_listen"`
+	WireGuardDirectory          string                `json:"wireguard_directory"`
+	WireGuardHealthCheckAddress string                `json:"wireguard_health_check_address"`
+	DestinationACL              *DestinationACLConfig `json:"destination_acl"`
+	Ingress                     IngressConfig         `json:"ingress"`
+	Edges                       []EdgeConfig          `json:"edges"`
+	Timeouts                    TimeoutConfig         `json:"timeouts"`
+	Limits                      LimitsConfig          `json:"limits"`
 }
 
 // IngressConfig configures the userspace WireGuard device accepting clients.
@@ -82,8 +85,10 @@ type IngressPeerConfig struct {
 type EdgeConfig struct {
 	ID                  model.EdgeID   `json:"id"`
 	PrivateKey          string         `json:"private_key"`
+	ListenPort          int            `json:"listen_port"`
 	OverlayAddress      netip.Prefix   `json:"overlay_address"`
 	PeerPublicKey       string         `json:"peer_public_key"`
+	PresharedKey        string         `json:"preshared_key"`
 	Endpoint            string         `json:"endpoint"`
 	HealthCheckAddress  string         `json:"health_check_address"`
 	AllowedIPs          []netip.Prefix `json:"allowed_ips"`
@@ -98,6 +103,28 @@ type GeoConfig struct {
 	City        string  `json:"city"`
 	Latitude    float64 `json:"latitude"`
 	Longitude   float64 `json:"longitude"`
+}
+
+// DestinationACLConfig is an ordered first-match destination policy. A nil
+// policy uses proxygen's built-in Internet-exit policy.
+type DestinationACLConfig struct {
+	DefaultAction string               `json:"default_action"`
+	Rules         []DestinationACLRule `json:"rules"`
+}
+
+// DestinationACLRule matches one protocol, network prefix, and optional list
+// of destination-port ranges.
+type DestinationACLRule struct {
+	Action   string       `json:"action"`
+	Protocol string       `json:"protocol"`
+	Prefix   netip.Prefix `json:"prefix"`
+	Ports    []PortRange  `json:"ports"`
+}
+
+// PortRange is an inclusive destination-port interval.
+type PortRange struct {
+	From uint16 `json:"from"`
+	To   uint16 `json:"to"`
 }
 
 // TimeoutConfig controls connection, flow, health, and shutdown lifetimes.

@@ -109,7 +109,7 @@ func TestValidationErrorsDoNotExposePrivateKeys(t *testing.T) {
 func TestValidateAcceptsOptionalControlFields(t *testing.T) {
 	cfg := validConfig()
 	cfg.GeoDatabase = "/var/lib/GeoLite2-City.mmdb"
-	cfg.MetricsListen = "0.0.0.0:9090"
+	cfg.MetricsListen = "127.0.0.1:9090"
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want valid optional control fields", err)
@@ -119,6 +119,42 @@ func TestValidateAcceptsOptionalControlFields(t *testing.T) {
 	cfg.MetricsListen = ""
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want empty optional control fields to disable services", err)
+	}
+}
+
+func TestValidateRejectsNonLoopbackMetricsListener(t *testing.T) {
+	cfg := validConfig()
+	cfg.MetricsListen = "0.0.0.0:9090"
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "metrics_listen must use a loopback IP address") {
+		t.Fatalf("Validate() error = %v, want loopback-only metrics error", err)
+	}
+}
+
+func TestValidateRejectsInvalidDestinationACL(t *testing.T) {
+	cfg := validConfig()
+	cfg.DestinationACL = &DestinationACLConfig{
+		DefaultAction: "pass",
+		Rules: []DestinationACLRule{{
+			Action: "allow", Protocol: "icmp", Prefix: netip.MustParsePrefix("10.0.0.1/8"),
+			Ports: []PortRange{{From: 443, To: 80}},
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted an invalid destination ACL")
+	}
+	for _, message := range []string{
+		"destination_acl.default_action",
+		"destination_acl.rules[0].protocol",
+		"destination_acl.rules[0].prefix",
+		"destination_acl.rules[0].ports[0]",
+	} {
+		if !strings.Contains(err.Error(), message) {
+			t.Errorf("Validate() error = %q, want %q", err, message)
+		}
 	}
 }
 
@@ -209,6 +245,13 @@ func TestValidateRejectsAllZeroWireGuardKeysWithoutExposingThem(t *testing.T) {
 				cfg.Edges[0].PeerPublicKey = zeroKey
 			},
 		},
+		{
+			name: "egress preshared key",
+			path: "edges[0].preshared_key",
+			change: func(cfg *Config) {
+				cfg.Edges[0].PresharedKey = zeroKey
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -267,6 +310,13 @@ func TestValidateRejectsNonCanonicalWireGuardKeysWithoutExposingThem(t *testing.
 			path: "edges[0].peer_public_key",
 			change: func(cfg *Config, key string) {
 				cfg.Edges[0].PeerPublicKey = key
+			},
+		},
+		{
+			name: "egress preshared key",
+			path: "edges[0].preshared_key",
+			change: func(cfg *Config, key string) {
+				cfg.Edges[0].PresharedKey = key
 			},
 		},
 	}

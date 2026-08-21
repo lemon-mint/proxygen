@@ -28,6 +28,7 @@ type TCPConfig struct {
 	ConnectTimeout   time.Duration
 	IdleTimeout      time.Duration
 	RelayBufferBytes int
+	AllowDestination DestinationPolicy
 
 	// AbortPending synchronously aborts in-progress endpoint handshakes on Close.
 	AbortPending func()
@@ -39,9 +40,11 @@ type TCPSnapshot struct {
 	Admissions uint64 `json:"admissions"`
 	// Active is the number of admitted requests currently dialing or relaying.
 	Active int64 `json:"active"`
-	// Wins and Failures count completed edge races by outcome.
+	// Wins and Failures count completed edge races by outcome. Denied counts
+	// requests rejected by the destination ACL before endpoint creation.
 	Wins     uint64 `json:"wins"`
 	Failures uint64 `json:"failures"`
+	Denied   uint64 `json:"denied"`
 }
 
 type tcpStats struct {
@@ -49,17 +52,19 @@ type tcpStats struct {
 	active     atomic.Int64
 	wins       atomic.Uint64
 	failures   atomic.Uint64
+	denied     atomic.Uint64
 }
 
 // TCP owns the bounded workers that race and relay ingress TCP connections.
 type TCP struct {
-	source         egress.Source
-	observer       egress.TCPObserver
-	connectTimeout time.Duration
-	idleTimeout    time.Duration
-	abortPending   func()
-	now            func() time.Time
-	buffers        sync.Pool
+	source           egress.Source
+	observer         egress.TCPObserver
+	connectTimeout   time.Duration
+	idleTimeout      time.Duration
+	allowDestination DestinationPolicy
+	abortPending     func()
+	now              func() time.Time
+	buffers          sync.Pool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -127,6 +132,9 @@ func NewTCP(source egress.Source, cfg TCPConfig) (*TCP, error) {
 	if cfg.RelayBufferBytes < 1 {
 		return nil, fmt.Errorf("TCP relay buffer size must be positive")
 	}
+	if cfg.AllowDestination == nil {
+		return nil, fmt.Errorf("TCP relay destination policy is required")
+	}
 	if cfg.AbortPending == nil {
 		return nil, fmt.Errorf("TCP relay pending-request abort callback is required")
 	}
@@ -135,16 +143,17 @@ func NewTCP(source egress.Source, cfg TCPConfig) (*TCP, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	capacity := cfg.Workers + cfg.QueueDepth
 	relay := &TCP{
-		source:         source,
-		connectTimeout: cfg.ConnectTimeout,
-		idleTimeout:    cfg.IdleTimeout,
-		observer:       observer,
-		abortPending:   cfg.AbortPending,
-		now:            time.Now,
-		ctx:            ctx,
-		cancel:         cancel,
-		admissions:     make(chan struct{}, capacity),
-		jobs:           make(chan tcpJob, capacity),
+		source:           source,
+		connectTimeout:   cfg.ConnectTimeout,
+		idleTimeout:      cfg.IdleTimeout,
+		allowDestination: cfg.AllowDestination,
+		observer:         observer,
+		abortPending:     cfg.AbortPending,
+		now:              time.Now,
+		ctx:              ctx,
+		cancel:           cancel,
+		admissions:       make(chan struct{}, capacity),
+		jobs:             make(chan tcpJob, capacity),
 	}
 	relay.buffers.New = func() any {
 		return make([]byte, cfg.RelayBufferBytes)
@@ -187,6 +196,11 @@ func (r *TCP) handle(req request) {
 
 	key, err := flowKeyFromID(req.ID())
 	if err != nil {
+		req.Complete(true)
+		return
+	}
+	if !r.allowDestination(key) {
+		r.stats.denied.Add(1)
 		req.Complete(true)
 		return
 	}
@@ -432,6 +446,7 @@ func (r *TCP) Snapshot() TCPSnapshot {
 		Active:     r.stats.active.Load(),
 		Wins:       r.stats.wins.Load(),
 		Failures:   r.stats.failures.Load(),
+		Denied:     r.stats.denied.Load(),
 	}
 }
 

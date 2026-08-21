@@ -31,23 +31,26 @@ var udpBufferPool = sync.Pool{
 type UDPSnapshot struct {
 	// Mappings is the number of currently active full-tuple mappings.
 	Mappings int64 `json:"mappings"`
-	// Expired counts mappings closed by the idle timer.
+	// Expired counts mappings closed by the idle timer. Dropped counts rejected
+	// admissions and mapping setup failures. Denied counts ACL rejections.
 	Expired uint64 `json:"expired"`
-	// Dropped counts rejected admissions and mapping setup failures.
 	Dropped uint64 `json:"dropped"`
+	Denied  uint64 `json:"denied"`
 }
 
 type udpStats struct {
 	mappings atomic.Int64
 	expired  atomic.Uint64
 	dropped  atomic.Uint64
+	denied   atomic.Uint64
 }
 
 // UDP owns the literal full-5-tuple UDP mappings for one ingress stack.
 type UDP struct {
-	source      egress.Source
-	idleTimeout time.Duration
-	maxFlows    int
+	source           egress.Source
+	idleTimeout      time.Duration
+	maxFlows         int
+	allowDestination DestinationPolicy
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -63,7 +66,7 @@ type UDP struct {
 
 // NewUDP constructs a bounded UDP mapping relay. It does not start background
 // work until Handler accepts a flow.
-func NewUDP(source egress.Source, idleTimeout time.Duration, maxFlows int) (*UDP, error) {
+func NewUDP(source egress.Source, idleTimeout time.Duration, maxFlows int, allowDestination DestinationPolicy) (*UDP, error) {
 	if source == nil {
 		return nil, errors.New("UDP relay requires an egress source")
 	}
@@ -76,15 +79,19 @@ func NewUDP(source egress.Source, idleTimeout time.Duration, maxFlows int) (*UDP
 	if maxFlows > model.MaxUDPFlows {
 		return nil, errors.New("maximum UDP flows exceeds the relay memory limit")
 	}
+	if allowDestination == nil {
+		return nil, errors.New("UDP relay destination policy is required")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &UDP{
-		source:      source,
-		idleTimeout: idleTimeout,
-		maxFlows:    maxFlows,
-		ctx:         ctx,
-		cancel:      cancel,
-		flows:       make(map[model.FlowKey]*udpFlow),
+		source:           source,
+		idleTimeout:      idleTimeout,
+		maxFlows:         maxFlows,
+		allowDestination: allowDestination,
+		ctx:              ctx,
+		cancel:           cancel,
+		flows:            make(map[model.FlowKey]*udpFlow),
 	}, nil
 }
 
@@ -118,6 +125,10 @@ func (relay *UDP) Handler(request *gvisorudp.ForwarderRequest) bool {
 func (relay *UDP) admit(key model.FlowKey, openIngress func() (net.Conn, bool)) bool {
 	if key.Protocol != model.ProtocolUDP || key.Validate() != nil || openIngress == nil {
 		relay.stats.dropped.Add(1)
+		return false
+	}
+	if !relay.allowDestination(key) {
+		relay.stats.denied.Add(1)
 		return false
 	}
 
@@ -241,6 +252,7 @@ func (relay *UDP) Snapshot() UDPSnapshot {
 		Mappings: relay.stats.mappings.Load(),
 		Expired:  relay.stats.expired.Load(),
 		Dropped:  relay.stats.dropped.Load(),
+		Denied:   relay.stats.denied.Load(),
 	}
 }
 

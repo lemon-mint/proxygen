@@ -282,6 +282,52 @@ func TestSelectUDPExcludesEveryUnhealthyEdge(t *testing.T) {
 	}
 }
 
+func TestNewDerivesUnknownEdgeLocationFromEndpoint(t *testing.T) {
+	cfg := validManagerConfig()
+	cfg.Edges[0].Geo = config.GeoConfig{CountryCode: "ZZ"}
+	want := model.GeoPoint{Latitude: 51.5074, Longitude: -0.1278}
+	endpoint, err := netip.ParseAddrPort(cfg.Edges[0].Endpoint)
+	if err != nil {
+		t.Fatalf("ParseAddrPort: %v", err)
+	}
+
+	manager, err := New(cfg, func(address netip.Addr) (model.GeoPoint, bool) {
+		if address == endpoint.Addr() {
+			return want, true
+		}
+		return model.GeoPoint{}, false
+	}, func(edgeConfig config.EdgeConfig, _ int) (egress.Edge, error) {
+		return &fakeEdge{id: edgeConfig.ID}, nil
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	if got := manager.edges[0].location; got != want {
+		t.Fatalf("derived location = %+v, want %+v", got, want)
+	}
+}
+
+func TestNewKeepsUnknownImportedEdgeLocationUnset(t *testing.T) {
+	cfg := validManagerConfig()
+	cfg.Edges[0].Geo = config.GeoConfig{CountryCode: "ZZ"}
+
+	manager, err := New(cfg, func(netip.Addr) (model.GeoPoint, bool) {
+		return model.GeoPoint{}, false
+	}, func(edgeConfig config.EdgeConfig, _ int) (egress.Edge, error) {
+		return &fakeEdge{id: edgeConfig.ID}, nil
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	if manager.edges[0].hasLocation {
+		t.Fatal("unresolved imported edge was treated as located at 0,0")
+	}
+}
+
 func newFakeManager(t *testing.T, configure func(*fakeEdge, int)) (*Manager, []*fakeEdge) {
 	t.Helper()
 	cfg := validManagerConfig()
