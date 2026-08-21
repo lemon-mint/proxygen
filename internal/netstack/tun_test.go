@@ -2,6 +2,7 @@ package netstack
 
 import (
 	"errors"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 	"os"
 	"sync"
 	"syscall"
@@ -46,6 +47,31 @@ func newTestIngress(t *testing.T) *Ingress {
 	return dev
 }
 
+func assertTCPBufferBounds(t *testing.T, networkStack *stack.Stack) {
+	t.Helper()
+	var send tcpip.TCPSendBufferSizeRangeOption
+	if err := networkStack.TransportProtocolOption(tcp.ProtocolNumber, &send); err != nil {
+		t.Fatalf("read TCP send buffer option: %s", err)
+	}
+	if send.Default != model.TCPStackBufferBytes || send.Max != model.TCPStackBufferBytes {
+		t.Fatalf("TCP send buffers = %+v, want default/max %d", send, model.TCPStackBufferBytes)
+	}
+	var receive tcpip.TCPReceiveBufferSizeRangeOption
+	if err := networkStack.TransportProtocolOption(tcp.ProtocolNumber, &receive); err != nil {
+		t.Fatalf("read TCP receive buffer option: %s", err)
+	}
+	if receive.Default != model.TCPStackBufferBytes || receive.Max != model.TCPStackBufferBytes {
+		t.Fatalf("TCP receive buffers = %+v, want default/max %d", receive, model.TCPStackBufferBytes)
+	}
+	var moderate tcpip.TCPModerateReceiveBufferOption
+	if err := networkStack.TransportProtocolOption(tcp.ProtocolNumber, &moderate); err != nil {
+		t.Fatalf("read TCP autotuning option: %s", err)
+	}
+	if bool(moderate) {
+		t.Fatal("TCP receive autotuning is enabled")
+	}
+}
+
 func TestNewIngressConfiguresUserspaceStackBeforeEventUp(t *testing.T) {
 	dev := newTestIngress(t)
 
@@ -64,6 +90,7 @@ func TestNewIngressConfiguresUserspaceStackBeforeEventUp(t *testing.T) {
 	if dev.tcpForwarder == nil || dev.udpHandler == nil {
 		t.Fatal("transport handlers were not installed")
 	}
+	assertTCPBufferBounds(t, dev.stack)
 
 	info, ok := dev.stack.SingleNICInfo(ingressNICID)
 	if !ok {

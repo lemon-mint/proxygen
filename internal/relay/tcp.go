@@ -117,11 +117,11 @@ func NewTCP(source egress.Source, cfg TCPConfig) (*TCP, error) {
 	if source == nil {
 		return nil, fmt.Errorf("TCP relay source is required")
 	}
-	if cfg.Workers < 1 {
-		return nil, fmt.Errorf("TCP relay workers must be positive")
+	if cfg.Workers < 1 || cfg.Workers > model.MaxTCPRaceWorkers {
+		return nil, fmt.Errorf("TCP relay workers must be between 1 and %d", model.MaxTCPRaceWorkers)
 	}
-	if cfg.QueueDepth < 0 {
-		return nil, fmt.Errorf("TCP relay queue depth must not be negative")
+	if cfg.QueueDepth < 0 || cfg.QueueDepth > model.MaxTCPRaceQueueDepth {
+		return nil, fmt.Errorf("TCP relay queue depth must be between 0 and %d", model.MaxTCPRaceQueueDepth)
 	}
 	if cfg.ConnectTimeout <= 0 {
 		return nil, fmt.Errorf("TCP relay connect timeout must be positive")
@@ -129,8 +129,14 @@ func NewTCP(source egress.Source, cfg TCPConfig) (*TCP, error) {
 	if cfg.IdleTimeout <= 0 {
 		return nil, fmt.Errorf("TCP relay idle timeout must be positive")
 	}
-	if cfg.RelayBufferBytes < 1 {
-		return nil, fmt.Errorf("TCP relay buffer size must be positive")
+	if cfg.RelayBufferBytes < 1024 || cfg.RelayBufferBytes > model.MaxTCPRelayBufferBytes {
+		return nil, fmt.Errorf("TCP relay buffer size must be between 1024 and %d", model.MaxTCPRelayBufferBytes)
+	}
+	if model.TCPRelayMemoryBytes(cfg.Workers, cfg.RelayBufferBytes) > model.MaxTCPRelayMemoryBytes {
+		return nil, fmt.Errorf("TCP relay copy buffers exceed %d bytes", model.MaxTCPRelayMemoryBytes)
+	}
+	if model.TCPAggregateMemoryBytes(cfg.Workers, cfg.QueueDepth, cfg.RelayBufferBytes) > model.MaxTCPAggregateMemoryBytes {
+		return nil, fmt.Errorf("TCP relay aggregate memory exceeds %d bytes", model.MaxTCPAggregateMemoryBytes)
 	}
 	if cfg.AllowDestination == nil {
 		return nil, fmt.Errorf("TCP relay destination policy is required")

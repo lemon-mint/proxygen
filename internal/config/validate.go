@@ -86,17 +86,27 @@ func (cfg Config) Validate() error {
 	add(validatePositiveDuration("timeouts.health_check_interval", cfg.Timeouts.HealthCheckInterval))
 	add(validatePositiveDuration("timeouts.shutdown", cfg.Timeouts.Shutdown))
 
-	if cfg.Limits.TCPRaceWorkers < 1 || cfg.Limits.TCPRaceWorkers > 65535 {
-		add(fmt.Errorf("limits.tcp_race_workers must be between 1 and 65535"))
+	if cfg.Limits.TCPRaceWorkers < 1 || cfg.Limits.TCPRaceWorkers > model.MaxTCPRaceWorkers {
+		add(fmt.Errorf("limits.tcp_race_workers must be between 1 and %d", model.MaxTCPRaceWorkers))
 	}
-	if cfg.Limits.TCPRaceQueueDepth < 1 || cfg.Limits.TCPRaceQueueDepth > 1_000_000 {
-		add(fmt.Errorf("limits.tcp_race_queue_depth must be between 1 and 1000000"))
+	if cfg.Limits.TCPRaceQueueDepth < 1 || cfg.Limits.TCPRaceQueueDepth > model.MaxTCPRaceQueueDepth {
+		add(fmt.Errorf("limits.tcp_race_queue_depth must be between 1 and %d", model.MaxTCPRaceQueueDepth))
 	}
 	if cfg.Limits.MaxUDPFlows < 1 || cfg.Limits.MaxUDPFlows > model.MaxUDPFlows {
 		add(fmt.Errorf("limits.max_udp_flows must be between 1 and %d", model.MaxUDPFlows))
 	}
-	if cfg.Limits.RelayBufferBytes < 1024 || cfg.Limits.RelayBufferBytes > 1<<20 {
-		add(fmt.Errorf("limits.relay_buffer_bytes must be between 1024 and 1048576"))
+	if cfg.Limits.RelayBufferBytes < 1024 || cfg.Limits.RelayBufferBytes > model.MaxTCPRelayBufferBytes {
+		add(fmt.Errorf("limits.relay_buffer_bytes must be between 1024 and %d", model.MaxTCPRelayBufferBytes))
+	}
+	if model.TCPRelayMemoryBytes(cfg.Limits.TCPRaceWorkers, cfg.Limits.RelayBufferBytes) > model.MaxTCPRelayMemoryBytes {
+		add(fmt.Errorf("TCP relay copy buffers must not exceed %d bytes", model.MaxTCPRelayMemoryBytes))
+	}
+	if model.TCPAggregateMemoryBytes(
+		cfg.Limits.TCPRaceWorkers,
+		cfg.Limits.TCPRaceQueueDepth,
+		cfg.Limits.RelayBufferBytes,
+	) > model.MaxTCPAggregateMemoryBytes {
+		add(fmt.Errorf("TCP relay aggregate memory must not exceed %d bytes", model.MaxTCPAggregateMemoryBytes))
 	}
 
 	return errors.Join(problems...)

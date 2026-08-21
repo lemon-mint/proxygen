@@ -70,6 +70,43 @@ func TestValidateRejectsUDPFlowLimitAboveMemoryBound(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsTCPResourceLimits(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*Config)
+		want      string
+	}{
+		{name: "workers", configure: func(cfg *Config) {
+			cfg.Limits.TCPRaceWorkers = model.MaxTCPRaceWorkers + 1
+		}, want: "limits.tcp_race_workers"},
+		{name: "queue", configure: func(cfg *Config) {
+			cfg.Limits.TCPRaceQueueDepth = model.MaxTCPRaceQueueDepth + 1
+		}, want: "limits.tcp_race_queue_depth"},
+		{name: "buffer", configure: func(cfg *Config) {
+			cfg.Limits.RelayBufferBytes = model.MaxTCPRelayBufferBytes + 1
+		}, want: "limits.relay_buffer_bytes"},
+		{name: "copy memory", configure: func(cfg *Config) {
+			cfg.Limits.TCPRaceWorkers = model.MaxTCPRaceWorkers
+			cfg.Limits.RelayBufferBytes = model.MaxTCPRelayBufferBytes
+		}, want: "TCP relay copy buffers must not exceed"},
+		{name: "aggregate memory", configure: func(cfg *Config) {
+			cfg.Limits.TCPRaceWorkers = 1024
+			cfg.Limits.TCPRaceQueueDepth = model.MaxTCPRaceQueueDepth
+			cfg.Limits.RelayBufferBytes = model.MaxTCPRelayBufferBytes
+		}, want: "TCP relay aggregate memory must not exceed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validConfig()
+			test.configure(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestValidateAllowsOneToFourEdges(t *testing.T) {
 	cfg := validConfig()
 	cfg.Edges = cfg.Edges[:1]

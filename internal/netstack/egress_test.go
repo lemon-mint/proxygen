@@ -23,6 +23,7 @@ func TestNewEgressEnforcesWireGuardMTUAndPublishesUp(t *testing.T) {
 	if name, err := network.Name(); err != nil || name != egressName {
 		t.Fatalf("Name() = %q, %v; want %q, nil", name, err, egressName)
 	}
+	assertTCPBufferBounds(t, network.stack)
 	select {
 	case event := <-network.Events():
 		if event != tun.EventUp {

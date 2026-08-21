@@ -65,6 +65,10 @@ func buildEgressStack(local netip.Addr, mtu int) (*stack.Stack, *channel.Endpoin
 		s.Destroy()
 		ep.Close()
 	}
+	if err := configureTCPBuffers(s); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
 
 	sackEnabled := tcpip.TCPSACKEnabled(true)
 	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabled); err != nil {

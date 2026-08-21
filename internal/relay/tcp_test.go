@@ -81,6 +81,45 @@ func TestTCPDestinationPolicyRejectsBeforeEndpointCreation(t *testing.T) {
 	}
 }
 
+func TestTCPRejectsResourceLimits(t *testing.T) {
+	base := TCPConfig{
+		Workers:          1,
+		ConnectTimeout:   time.Second,
+		IdleTimeout:      time.Second,
+		RelayBufferBytes: 1024,
+		AllowDestination: allowAllTestDestinations,
+		AbortPending:     func() {},
+	}
+	tests := []struct {
+		name      string
+		configure func(*TCPConfig)
+	}{
+		{name: "workers", configure: func(cfg *TCPConfig) { cfg.Workers = model.MaxTCPRaceWorkers + 1 }},
+		{name: "queue", configure: func(cfg *TCPConfig) { cfg.QueueDepth = model.MaxTCPRaceQueueDepth + 1 }},
+		{name: "buffer", configure: func(cfg *TCPConfig) { cfg.RelayBufferBytes = model.MaxTCPRelayBufferBytes + 1 }},
+		{name: "copy memory", configure: func(cfg *TCPConfig) {
+			cfg.Workers = model.MaxTCPRaceWorkers
+			cfg.RelayBufferBytes = model.MaxTCPRelayBufferBytes
+		}},
+		{name: "aggregate memory", configure: func(cfg *TCPConfig) {
+			cfg.Workers = 1024
+			cfg.QueueDepth = model.MaxTCPRaceQueueDepth
+			cfg.RelayBufferBytes = model.MaxTCPRelayBufferBytes
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := base
+			test.configure(&cfg)
+			relay, err := NewTCP(fakeSource{}, cfg)
+			if err == nil {
+				relay.Close()
+				t.Fatal("NewTCP accepted an unsafe resource limit")
+			}
+		})
+	}
+}
+
 func TestTCPRequiresDestinationPolicy(t *testing.T) {
 	relay, err := NewTCP(fakeSource{}, TCPConfig{
 		Workers:          1,

@@ -2,6 +2,7 @@ package netstack
 
 import (
 	"fmt"
+	"git.gosuda.org/lemon-mint/proxygen/internal/model"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -50,6 +51,10 @@ func buildStack(mtu, maxTCPInFlight int, handlers Handlers) (*stack.Stack, *chan
 		s.Destroy()
 		ep.Close()
 	}
+	if err := configureTCPBuffers(s); err != nil {
+		cleanup()
+		return nil, nil, nil, nil, err
+	}
 
 	if err := s.CreateNIC(ingressNICID, ep); err != nil {
 		cleanup()
@@ -69,7 +74,7 @@ func buildStack(mtu, maxTCPInFlight int, handlers Handlers) (*stack.Stack, *chan
 		{Destination: header.IPv6EmptySubnet, NIC: ingressNICID},
 	})
 
-	tcpForwarder := tcp.NewForwarder(s, 0, maxTCPInFlight, handlers.TCP)
+	tcpForwarder := tcp.NewForwarder(s, model.TCPIngressReceiveWindowBytes, maxTCPInFlight, handlers.TCP)
 	udpHandler := makeUDPTransportHandler(s, handlers.UDP)
 	// Transport handlers are initialization-only in gVisor. Install both before
 	// NewIngress makes the device observable or emits EventUp.
@@ -93,6 +98,30 @@ func makeUDPTransportHandler(s *stack.Stack, handler udp.ForwarderHandler) udpTr
 	return func(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
 		return handler(udp.NewForwarderRequest(s, id, pkt))
 	}
+}
+
+func configureTCPBuffers(s *stack.Stack) error {
+	send := tcpip.TCPSendBufferSizeRangeOption{
+		Min:     4096,
+		Default: model.TCPStackBufferBytes,
+		Max:     model.TCPStackBufferBytes,
+	}
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &send); err != nil {
+		return tcpipError("configure TCP send buffers", err)
+	}
+	receive := tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     4096,
+		Default: model.TCPStackBufferBytes,
+		Max:     model.TCPStackBufferBytes,
+	}
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &receive); err != nil {
+		return tcpipError("configure TCP receive buffers", err)
+	}
+	moderateReceive := tcpip.TCPModerateReceiveBufferOption(false)
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &moderateReceive); err != nil {
+		return tcpipError("disable TCP receive autotuning", err)
+	}
+	return nil
 }
 
 func tcpipError(operation string, err tcpip.Error) error {

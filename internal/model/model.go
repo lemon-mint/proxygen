@@ -56,6 +56,34 @@ type GeoPoint struct {
 // MaxUDPFlows bounds the NAT table and its two blocking packet pumps per
 // mapping. Larger values require a readiness-driven multiplexed relay.
 const MaxUDPFlows = 2048
+const (
+	MaxTCPRaceWorkers            = 2048
+	MaxTCPRaceQueueDepth         = 4096
+	MaxTCPRelayBufferBytes       = 256 << 10
+	MaxTCPRelayMemoryBytes       = 512 << 20
+	TCPStackBufferBytes          = 64 << 10
+	TCPIngressReceiveWindowBytes = TCPStackBufferBytes
+	MaxTCPAggregateMemoryBytes   = 768 << 20
+)
+
+// TCPRelayMemoryBytes is the copy-buffer memory held by active bidirectional
+// TCP relays.
+func TCPRelayMemoryBytes(workers, bufferBytes int) int64 {
+	return 2 * int64(workers) * int64(bufferBytes)
+}
+
+// TCPSocketMemoryBytes bounds send and receive buffers for every accepted
+// ingress endpoint and every active egress endpoint.
+func TCPSocketMemoryBytes(workers, queueDepth int) int64 {
+	endpoints := int64(2*workers + queueDepth)
+	return endpoints * 2 * TCPStackBufferBytes
+}
+
+// TCPAggregateMemoryBytes combines relay copy buffers and gVisor socket
+// buffers. It excludes goroutine stacks and protocol bookkeeping.
+func TCPAggregateMemoryBytes(workers, queueDepth, bufferBytes int) int64 {
+	return TCPRelayMemoryBytes(workers, bufferBytes) + TCPSocketMemoryBytes(workers, queueDepth)
+}
 
 // EdgeState is the current lifecycle and health state of an egress edge.
 type EdgeState uint8

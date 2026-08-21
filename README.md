@@ -6,7 +6,7 @@ No host TUN device or `CAP_NET_ADMIN` is required. The outer WireGuard UDP socke
 
 ## Build
 
-Requires Go 1.26.3 or newer.
+Requires Go 1.27.0 or newer.
 
 ```sh
 go build -o proxygen ./cmd/proxygen
@@ -92,6 +92,8 @@ A configuration is single-stack: ingress, every egress overlay, every health tar
 When `geo_database` is set, proxygen opens that local MaxMind City-compatible MMDB without modifying it. When omitted, proxygen conditionally downloads `https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb` into `${TMPDIR}/proxygen/GeoLite2-City.mmdb`. It sends cached `ETag`/`Last-Modified` validators every 24 hours, compares SHA-256 content, validates a new MMDB before atomic replacement, and reloads only when the file changed. A failed refresh keeps a valid cached database. TCP selection always uses live full-edge connection racing; Geo data is a fallback for UDP and cold destinations.
 
 The UDP NAT table uses one shared idle reaper rather than one timer goroutine per mapping. Each active mapping still holds two maximum-size datagram buffers and two blocking packet pumps, so `max_udp_flows` defaults to 512 and is capped at 2048. The buffer-only ceiling is about 64 MiB by default and 256 MiB at the maximum; larger scale requires a readiness-driven multiplexer.
+
+TCP uses a fixed worker pool and bounded admission queue. Both ingress and egress gVisor stacks cap TCP send and receive buffers at 64 KiB and disable receive autotuning; the forwarded ingress window is also 64 KiB. Hard limits are 2048 active workers, 4096 queued ingress endpoints, 256 KiB per copy buffer, 512 MiB of copy buffers, and 768 MiB for all modeled socket plus copy buffers. Both configuration validation and the relay constructor enforce the individual and aggregate budgets.
 
 ### Client destination ACL
 
